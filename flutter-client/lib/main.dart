@@ -70,7 +70,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
   final messages = <ChatEntry>[
     ChatEntry(
       sender: '系统',
-      content: '企业 IM 手机端 v10 已就绪：SIP 崩溃日志版 2026-05-20',
+      content: '企业 IM 手机端 v11 已就绪：SIP 日志自动上传版 2026-05-20',
       direction: 'system',
       createdAt: DateTime.now(),
     ),
@@ -115,6 +115,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
     sipChannel.setMethodCallHandler(handleSipChannelCall);
     unawaited(initLocalStore());
     unawaited(loadCallReadiness());
+    unawaited(uploadNativeDiagnostics('app_start'));
   }
 
   @override
@@ -512,6 +513,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
         sipStatus = 'error: ${shortSipMessage(message)}';
         addLog('SIP ERROR ${error.code}: ${error.message}');
       });
+      unawaited(uploadNativeDiagnostics('sip_error'));
     }
   }
 
@@ -544,6 +546,24 @@ class _MobileClientPageState extends State<MobileClientPage> {
       return result ?? 'native diagnostics empty';
     } on PlatformException catch (error) {
       return 'native diagnostics error ${error.code}: ${error.message}';
+    }
+  }
+
+  Future<void> uploadNativeDiagnostics(String event) async {
+    try {
+      final diagnostics = await loadNativeDiagnostics();
+      await postJson('/api/debug/mobile/logs', {
+        'userId': userIdController.text.trim(),
+        'event': event,
+        'text': diagnostics,
+      });
+      if (mounted) {
+        setState(() => addLog('NATIVE DIAG UPLOADED $event'));
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => addLog('NATIVE DIAG UPLOAD FAILED $error'));
+      }
     }
   }
 
@@ -776,7 +796,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('企业 IM · v10 SIP日志版', style: TextStyle(fontWeight: FontWeight.w700)),
+                  const Text('企业 IM · v11 SIP日志上传', style: TextStyle(fontWeight: FontWeight.w700)),
                   Text('$statusText · ${peerIdController.text.trim()}', style: Theme.of(context).textTheme.bodySmall),
                 ],
               ),
