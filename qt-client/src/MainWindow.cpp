@@ -914,7 +914,7 @@ void MainWindow::handleApiResponse(const QString &label, const QByteArray &body)
         if (object.contains("sipUsername")) {
             setActionStatus("已拿到 SIP 媒体配置，正在尝试启动桌面端音视频。");
             nativeStartedCallId = activeCallId;
-            sipMediaClient->start(object, activeCallId, activeMediaType);
+            sipMediaClient->start(object, activeCallId, activeMediaType, !activeCallIncoming);
         }
 
         appendLog("接口成功 " + label + " " + QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact)));

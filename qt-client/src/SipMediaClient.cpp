@@ -20,7 +20,7 @@ SipMediaClient::SipMediaClient(QObject *parent)
             });
 }
 
-void SipMediaClient::start(const QJsonObject &mediaConfig, const QString &callId, const QString &mediaType)
+void SipMediaClient::start(const QJsonObject &mediaConfig, const QString &callId, const QString &mediaType, bool outbound)
 {
     stop();
 
@@ -57,11 +57,11 @@ void SipMediaClient::start(const QJsonObject &mediaConfig, const QString &callId
         args << "--null-video";
     }
 
-    if (!calleeUri.isEmpty()) {
+    if (outbound && !calleeUri.isEmpty()) {
         args << calleeUri;
     }
 
-    emit logLine("SIP START call=" + callId + " mediaType=" + mediaType + " bin=" + bin);
+    emit logLine("SIP START call=" + callId + " mediaType=" + mediaType + " outbound=" + QString(outbound ? "true" : "false") + " bin=" + bin);
     emit logLine("SIP ARGS " + args.join(" "));
     process.setWorkingDirectory(QFileInfo(bin).absolutePath());
     process.start(bin, args);
