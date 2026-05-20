@@ -70,7 +70,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
   final messages = <ChatEntry>[
     ChatEntry(
       sender: '系统',
-      content: '企业 IM 手机端 v7 已就绪：SIP registrar 修复版 2026-05-20',
+      content: '企业 IM 手机端 v8 已就绪：SIP 接听预注册修复版 2026-05-20',
       direction: 'system',
       createdAt: DateTime.now(),
     ),
@@ -285,6 +285,11 @@ class _MobileClientPageState extends State<MobileClientPage> {
             addLog('TCP $type active=${call['id']} status=${call['status']}');
           });
           syncCameraPreviewForCall(call);
+          if (call['status']?.toString() == 'ringing' &&
+              call['calleeId']?.toString() == userIdController.text.trim() &&
+              call['mediaStatus'] == 'media_ready') {
+            unawaited(startNativeSipForCall(call));
+          }
           if (call['status']?.toString() == 'answered' && call['mediaStatus'] == 'media_ready') {
             unawaited(startNativeSipForCall(call));
           }
@@ -405,6 +410,9 @@ class _MobileClientPageState extends State<MobileClientPage> {
       setState(() => addLog('CALL ANSWER BLOCKED not incoming ringing'));
       return;
     }
+    if (activeCall?['mediaStatus'] == 'media_ready') {
+      await startNativeSipForCall(activeCall!);
+    }
     await transitionCall('answer');
   }
 
@@ -428,7 +436,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
       await saveLocalCall(data);
       addLog('CALL ${action.toUpperCase()} ${jsonEncode(data)}');
       syncCameraPreviewForCall(data);
-      if (action == 'answer' && data['mediaStatus'] == 'media_ready') {
+      if (action == 'answer' && data['mediaStatus'] == 'media_ready' && nativeCallId != callId) {
         await startNativeSipForCall(data);
       }
       if (action == 'reject' || action == 'hangup') {
@@ -732,7 +740,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('企业 IM · v7 SIP注册修复', style: TextStyle(fontWeight: FontWeight.w700)),
+                  const Text('企业 IM · v8 SIP接听修复', style: TextStyle(fontWeight: FontWeight.w700)),
                   Text('$statusText · ${peerIdController.text.trim()}', style: Theme.of(context).textTheme.bodySmall),
                 ],
               ),
