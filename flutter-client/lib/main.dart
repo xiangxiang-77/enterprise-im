@@ -70,7 +70,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
   final messages = <ChatEntry>[
     ChatEntry(
       sender: '系统',
-      content: '企业 IM 手机端 v11 已就绪：SIP 日志自动上传版 2026-05-20',
+      content: '企业 IM 手机端 v12 已就绪：PJSIP 绑定保留修复版 2026-05-20',
       direction: 'system',
       createdAt: DateTime.now(),
     ),
@@ -796,7 +796,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('企业 IM · v11 SIP日志上传', style: TextStyle(fontWeight: FontWeight.w700)),
+                  const Text('企业 IM · v12 PJSIP绑定修复', style: TextStyle(fontWeight: FontWeight.w700)),
                   Text('$statusText · ${peerIdController.text.trim()}', style: Theme.of(context).textTheme.bodySmall),
                 ],
               ),
