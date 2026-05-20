@@ -491,9 +491,17 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun parseSipTarget(registrar: String): SipTarget {
-        val uri = Uri.parse(registrar)
-        val host = uri.host.orEmpty()
-        val port = if (uri.port > 0) uri.port else 5060
+        val rawTarget = registrar
+            .trim()
+            .removePrefix("sip:")
+            .removePrefix("sips:")
+            .substringBefore(';')
+            .substringBefore('?')
+            .substringAfter('@')
+        val hostPort = rawTarget.removePrefix("//")
+        val host = hostPort.substringBefore(':').trim()
+        val parsedPort = hostPort.substringAfter(':', "").toIntOrNull()
+        val port = parsedPort?.takeIf { it > 0 } ?: 5060
         val domain = if (host == "127.0.0.1" || host == "localhost") "enterprise-im.local" else host
         return SipTarget(host, domain, port)
     }

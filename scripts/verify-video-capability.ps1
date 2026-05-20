@@ -53,6 +53,13 @@ Add-Check `
     -Warn "native SIP bridge does not expose detailed registration/call/video errors to Flutter" `
     -Required
 
+Add-Check `
+    -Name "Android SIP registrar parser" `
+    -Ok ($mainActivityText -match 'removePrefix\("sip:"\)' -and $mainActivityText -match 'substringBefore\('':''\)' -and $mainActivityText -match 'substringAfter\('':''') `
+    -Pass "Android bridge parses sip:host:port registrar strings without relying on Uri.host" `
+    -Warn "Android bridge may reject sip:host:port registrar strings as invalid" `
+    -Required
+
 $flutterMain = Join-Path $root "flutter-client\lib\main.dart"
 $flutterMainText = Read-TextSafe $flutterMain
 Add-Check `
