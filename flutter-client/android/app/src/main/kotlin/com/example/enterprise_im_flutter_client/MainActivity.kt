@@ -56,6 +56,7 @@ class MainActivity : FlutterActivity() {
     private var pjsipCall: NativeCall? = null
     private var remoteVideoSurface: Surface? = null
     private var remoteVideoWindow: VideoWindow? = null
+    private val pjsipLock = Any()
     private val nativePjsipAvailable: Boolean by lazy { loadNativePjsip() }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -195,6 +196,20 @@ class MainActivity : FlutterActivity() {
         mediaType: String,
         outbound: Boolean
     ): Map<String, Any?> {
+        synchronized(pjsipLock) {
+            return startPjsua2CallLocked(callId, registrar, username, password, calleeUri, mediaType, outbound)
+        }
+    }
+
+    private fun startPjsua2CallLocked(
+        callId: String,
+        registrar: String,
+        username: String,
+        password: String,
+        calleeUri: String,
+        mediaType: String,
+        outbound: Boolean
+    ): Map<String, Any?> {
         val target = parseSipTarget(registrar)
         if (target.host.isBlank()) {
             return mapOf("status" to "error", "code" to "invalid_registrar", "message" to "Invalid SIP registrar: $registrar")
@@ -307,23 +322,25 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun stopPjsua2() {
-        try {
-            pjsipCall?.hangup(CallOpParam().apply { statusCode = pjsip_status_code.PJSIP_SC_DECLINE })
-        } catch (_: Exception) {
-        }
-        try {
-            pjsipAccount?.shutdown()
-        } catch (_: Exception) {
-        }
-        try {
-            pjsipEndpoint?.hangupAllCalls()
-            pjsipEndpoint?.libDestroy()
-        } catch (_: Exception) {
-        } finally {
-            pjsipCall = null
-            pjsipAccount = null
-            pjsipEndpoint = null
-            remoteVideoWindow = null
+        synchronized(pjsipLock) {
+            try {
+                pjsipCall?.hangup(CallOpParam().apply { statusCode = pjsip_status_code.PJSIP_SC_DECLINE })
+            } catch (_: Exception) {
+            }
+            try {
+                pjsipAccount?.shutdown()
+            } catch (_: Exception) {
+            }
+            try {
+                pjsipEndpoint?.hangupAllCalls()
+                pjsipEndpoint?.libDestroy()
+            } catch (_: Exception) {
+            } finally {
+                pjsipCall = null
+                pjsipAccount = null
+                pjsipEndpoint = null
+                remoteVideoWindow = null
+            }
         }
     }
 

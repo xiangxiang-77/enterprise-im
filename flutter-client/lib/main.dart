@@ -70,7 +70,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
   final messages = <ChatEntry>[
     ChatEntry(
       sender: '系统',
-      content: '企业 IM 手机端 v8 已就绪：SIP 接听预注册修复版 2026-05-20',
+      content: '企业 IM 手机端 v9 已就绪：SIP 启动去重修复版 2026-05-20',
       direction: 'system',
       createdAt: DateTime.now(),
     ),
@@ -89,6 +89,8 @@ class _MobileClientPageState extends State<MobileClientPage> {
   List<Map<String, Object?>> calls = [];
   String sipStatus = 'idle';
   String? nativeCallId;
+  String? nativeStartingCallId;
+  Future<void>? nativeStartFuture;
   CameraController? cameraController;
   Future<void>? cameraInitFuture;
   String cameraStatus = 'idle';
@@ -453,6 +455,26 @@ class _MobileClientPageState extends State<MobileClientPage> {
       addLog('SIP already started for $callId');
       return;
     }
+    if (callId.isNotEmpty && nativeStartingCallId == callId && nativeStartFuture != null) {
+      addLog('SIP start already running for $callId');
+      await nativeStartFuture;
+      return;
+    }
+    nativeStartingCallId = callId;
+    final startFuture = _startNativeSipForCall(call);
+    nativeStartFuture = startFuture;
+    try {
+      await startFuture;
+    } finally {
+      if (nativeStartingCallId == callId) {
+        nativeStartingCallId = null;
+        nativeStartFuture = null;
+      }
+    }
+  }
+
+  Future<void> _startNativeSipForCall(Map<String, Object?> call) async {
+    final callId = call['id']?.toString() ?? '';
     final peerId = peerIdForCall(call);
     final outbound = call['callerId']?.toString() == userIdController.text.trim();
     final config = await getJson(
@@ -494,12 +516,17 @@ class _MobileClientPageState extends State<MobileClientPage> {
   }
 
   Future<void> stopNativeSip() async {
+    if (nativeStartFuture != null) {
+      await nativeStartFuture;
+    }
     try {
       final result = await sipChannel.invokeMethod<Map<Object?, Object?>>('stop');
       if (!mounted) return;
       setState(() {
         sipStatus = result?['status']?.toString() ?? 'stopped';
         nativeCallId = null;
+        nativeStartingCallId = null;
+        nativeStartFuture = null;
         addLog('SIP STOP $sipStatus');
       });
     } on PlatformException catch (error) {
@@ -740,7 +767,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('企业 IM · v8 SIP接听修复', style: TextStyle(fontWeight: FontWeight.w700)),
+                  const Text('企业 IM · v9 SIP去重修复', style: TextStyle(fontWeight: FontWeight.w700)),
                   Text('$statusText · ${peerIdController.text.trim()}', style: Theme.of(context).textTheme.bodySmall),
                 ],
               ),
