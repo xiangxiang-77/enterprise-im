@@ -9,6 +9,8 @@ import android.net.sip.SipProfile
 import android.net.Uri
 import android.os.Build
 import android.content.Context
+import android.os.Bundle
+import android.util.Log
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -42,9 +44,16 @@ import org.pjsip.pjsua2.pjmedia_type
 import org.pjsip.pjsua2.pjsip_status_code
 import org.pjsip.pjsua2.pjsip_transport_type_e
 import org.pjsip.pjsua2.pjsua_call_media_status
+import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : FlutterActivity() {
     private val channelName = "enterprise_im/sip"
+    private val logTag = "EnterpriseIMSip"
     private var sipChannel: MethodChannel? = null
     private var activeCallId: String? = null
     private var activeMediaType: String = "audio"
@@ -58,6 +67,16 @@ class MainActivity : FlutterActivity() {
     private var remoteVideoWindow: VideoWindow? = null
     private val pjsipLock = Any()
     private val nativePjsipAvailable: Boolean by lazy { loadNativePjsip() }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            appendNativeLog("CRASH thread=${thread.name} ${throwable.stackTraceToStringSafe()}")
+            previousHandler?.uncaughtException(thread, throwable)
+        }
+        appendNativeLog("APP onCreate")
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -77,6 +96,7 @@ class MainActivity : FlutterActivity() {
                     val calleeUri = args?.get("calleeSipUri")?.toString().orEmpty()
                     val mediaType = args?.get("mediaType")?.toString().orEmpty().ifBlank { "audio" }
                     val outbound = args?.get("outbound") as? Boolean ?: true
+                    appendNativeLog("START requested callId=$callId mediaType=$mediaType outbound=$outbound registrar=$registrar callee=$calleeUri")
                     if (callId.isBlank() || registrar.isBlank() || username.isBlank()) {
                         result.error("invalid_config", "callId, sipRegistrar, and sipUsername are required", null)
                         return@setMethodCallHandler
@@ -88,7 +108,11 @@ class MainActivity : FlutterActivity() {
                         result.success(startResult)
                     }
                 }
-                "stop" -> result.success(stopSipCall())
+                "stop" -> {
+                    appendNativeLog("STOP requested activeCallId=$activeCallId")
+                    result.success(stopSipCall())
+                }
+                "diagnostics" -> result.success(readNativeLog())
                 else -> result.notImplemented()
             }
         }
@@ -141,6 +165,7 @@ class MainActivity : FlutterActivity() {
 
         val target = parseSipTarget(registrar)
         if (target.host.isBlank()) {
+            appendNativeLog("ERROR invalid registrar android-sip registrar=$registrar")
             return mapOf("status" to "error", "code" to "invalid_registrar", "message" to "Invalid SIP registrar: $registrar")
         }
         val remote = if (calleeUri.isBlank()) null else calleeUri
@@ -181,8 +206,10 @@ class MainActivity : FlutterActivity() {
                 "nativeEngine" to "android-sip"
             )
         } catch (error: SipException) {
+            appendNativeLog("ERROR android sip exception ${error.stackTraceToStringSafe()}")
             mapOf("status" to "error", "code" to "sip_exception", "message" to error.message)
         } catch (error: Exception) {
+            appendNativeLog("ERROR android native exception ${error.stackTraceToStringSafe()}")
             mapOf("status" to "error", "code" to "native_exception", "message" to error.message)
         }
     }
@@ -212,6 +239,7 @@ class MainActivity : FlutterActivity() {
     ): Map<String, Any?> {
         val target = parseSipTarget(registrar)
         if (target.host.isBlank()) {
+            appendNativeLog("ERROR invalid registrar pjsua2 registrar=$registrar")
             return mapOf("status" to "error", "code" to "invalid_registrar", "message" to "Invalid SIP registrar: $registrar")
         }
         if (outbound && calleeUri.isBlank()) {
@@ -239,6 +267,7 @@ class MainActivity : FlutterActivity() {
             stopPjsua2()
             activeCallId = callId
             activeMediaType = mediaType
+            appendNativeLog("PJSUA2 create endpoint target=${target.host}:${target.port} domain=${target.domain}")
             val endpoint = Endpoint()
             endpoint.libCreate()
             val epConfig = EpConfig()
@@ -264,14 +293,17 @@ class MainActivity : FlutterActivity() {
             val account = NativeAccount()
             account.create(accountConfig)
             waitForRegistration(account)
+            appendNativeLog("PJSUA2 registered username=$username outbound=$outbound")
             val nativeCall = if (outbound) {
                 val call = NativeCall(account)
                 val param = CallOpParam(true)
                 param.opt.audioCount = 1
                 param.opt.videoCount = if (mediaType == "video") 1 else 0
                 call.makeCall(calleeUri, param)
+                appendNativeLog("PJSUA2 makeCall $calleeUri audio=1 video=${param.opt.videoCount}")
                 call
             } else {
+                appendNativeLog("PJSUA2 listening for incoming call audio=1 video=${if (mediaType == "video") 1 else 0}")
                 null
             }
 
@@ -292,6 +324,7 @@ class MainActivity : FlutterActivity() {
                 "message" to if (outbound) "PJSIP pjsua2 outbound call started" else "PJSIP pjsua2 incoming listener started"
             )
         } catch (error: Exception) {
+            appendNativeLog("ERROR pjsua2 start ${error.stackTraceToStringSafe()}")
             emitSipEvent("error", error.message ?: "pjsua2 exception")
             stopPjsua2()
             mapOf("status" to "error", "code" to "pjsua2_exception", "message" to error.message)
@@ -323,6 +356,7 @@ class MainActivity : FlutterActivity() {
 
     private fun stopPjsua2() {
         synchronized(pjsipLock) {
+            appendNativeLog("PJSUA2 stop begin activeCallId=$activeCallId")
             try {
                 pjsipCall?.hangup(CallOpParam().apply { statusCode = pjsip_status_code.PJSIP_SC_DECLINE })
             } catch (_: Exception) {
@@ -340,6 +374,7 @@ class MainActivity : FlutterActivity() {
                 pjsipAccount = null
                 pjsipEndpoint = null
                 remoteVideoWindow = null
+                appendNativeLog("PJSUA2 stop done")
             }
         }
     }
@@ -348,16 +383,20 @@ class MainActivity : FlutterActivity() {
         return try {
             System.loadLibrary("c++_shared")
             System.loadLibrary("pjsua2")
+            appendNativeLog("PJSUA2 libraries loaded")
             true
-        } catch (_: UnsatisfiedLinkError) {
+        } catch (error: UnsatisfiedLinkError) {
+            appendNativeLog("ERROR load pjsua2 ${error.stackTraceToStringSafe()}")
             false
-        } catch (_: SecurityException) {
+        } catch (error: SecurityException) {
+            appendNativeLog("ERROR load pjsua2 security ${error.stackTraceToStringSafe()}")
             false
         }
     }
 
     private inner class NativeAccount : Account() {
         override fun onRegState(prm: OnRegStateParam) {
+            appendNativeLog("REG state code=${prm.code} reason=${prm.reason}")
             emitSipEvent("registration", "${prm.code} ${prm.reason}".trim())
         }
 
@@ -370,8 +409,10 @@ class MainActivity : FlutterActivity() {
                 answer.opt.videoCount = if (activeMediaType == "video") 1 else 0
                 call.answer(answer)
                 pjsipCall = call
+                appendNativeLog("INCOMING answered callId=${prm.callId} mediaType=$activeMediaType video=${answer.opt.videoCount}")
                 emitSipEvent("incoming", "answered ${activeMediaType}")
             } catch (error: Exception) {
+                appendNativeLog("ERROR incoming answer ${error.stackTraceToStringSafe()}")
                 emitSipEvent("error", "incoming answer failed: ${error.message}")
             }
         }
@@ -384,8 +425,10 @@ class MainActivity : FlutterActivity() {
                 val reason = info.lastReason ?: ""
                 val status = info.lastStatusCode
                 val state = info.stateText ?: "unknown"
+                appendNativeLog("CALL state $state status=$status reason=$reason")
                 emitSipEvent("call", "$state $status $reason".trim())
             } catch (error: Exception) {
+                appendNativeLog("ERROR call state ${error.stackTraceToStringSafe()}")
                 emitSipEvent("error", "call state failed: ${error.message}")
             }
         }
@@ -401,17 +444,20 @@ class MainActivity : FlutterActivity() {
                         val manager = pjsipEndpoint?.audDevManager() ?: return
                         audioMedia.startTransmit(manager.playbackDevMedia)
                         manager.captureDevMedia.startTransmit(audioMedia)
+                        appendNativeLog("MEDIA audio active index=${mediaInfo.index}")
                         emitSipEvent("media", "audio active")
                     }
                     if (mediaInfo.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
                         mediaInfo.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE
                     ) {
                         remoteVideoWindow = mediaInfo.videoWindow ?: VideoWindow(mediaInfo.videoIncomingWindowId)
+                        appendNativeLog("MEDIA video active index=${mediaInfo.index} incomingWindow=${mediaInfo.videoIncomingWindowId}")
                         emitSipEvent("media", "video active")
                         attachRemoteVideoWindow()
                     }
                 }
             } catch (error: Exception) {
+                appendNativeLog("ERROR media state ${error.stackTraceToStringSafe()}")
                 emitSipEvent("error", "media state failed: ${error.message}")
             }
         }
@@ -432,8 +478,10 @@ class MainActivity : FlutterActivity() {
             videoWindowHandle.setHandle(windowHandle)
             videoWindow.setWindow(videoWindowHandle)
             videoWindow.Show(true)
+            appendNativeLog("VIDEO remote window attached")
             emitSipEvent("video", "remote window attached")
         } catch (error: Exception) {
+            appendNativeLog("ERROR remote video attach ${error.stackTraceToStringSafe()}")
             emitSipEvent("error", "remote video attach failed: ${error.message}")
         }
     }
@@ -459,6 +507,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun emitSipEvent(type: String, message: String) {
+        appendNativeLog("EVENT $type $message")
         runOnUiThread {
             sipChannel?.invokeMethod(
                 "sipEvent",
@@ -521,6 +570,42 @@ class MainActivity : FlutterActivity() {
         val port = parsedPort?.takeIf { it > 0 } ?: 5060
         val domain = if (host == "127.0.0.1" || host == "localhost") "enterprise-im.local" else host
         return SipTarget(host, domain, port)
+    }
+
+    private fun nativeLogFile(): File = File(getExternalFilesDir(null), "enterprise-im-native.log")
+
+    private fun appendNativeLog(line: String) {
+        val entry = "${SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())} $line"
+        Log.d(logTag, entry)
+        try {
+            val file = nativeLogFile()
+            file.parentFile?.mkdirs()
+            file.appendText(entry + "\n")
+            if (file.length() > 512 * 1024) {
+                val tail = file.readText().takeLast(256 * 1024)
+                file.writeText(tail)
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun readNativeLog(): String {
+        return try {
+            val file = nativeLogFile()
+            if (!file.exists()) {
+                "native log not found: ${file.absolutePath}"
+            } else {
+                "path=${file.absolutePath}\n" + file.readText().takeLast(24000)
+            }
+        } catch (error: Exception) {
+            "native log read failed: ${error.message}"
+        }
+    }
+
+    private fun Throwable.stackTraceToStringSafe(): String {
+        val writer = StringWriter()
+        printStackTrace(PrintWriter(writer))
+        return writer.toString()
     }
 
     private data class SipTarget(val host: String, val domain: String, val port: Int)

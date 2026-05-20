@@ -70,7 +70,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
   final messages = <ChatEntry>[
     ChatEntry(
       sender: '系统',
-      content: '企业 IM 手机端 v9 已就绪：SIP 启动去重修复版 2026-05-20',
+      content: '企业 IM 手机端 v10 已就绪：SIP 崩溃日志版 2026-05-20',
       direction: 'system',
       createdAt: DateTime.now(),
     ),
@@ -538,6 +538,15 @@ class _MobileClientPageState extends State<MobileClientPage> {
     }
   }
 
+  Future<String> loadNativeDiagnostics() async {
+    try {
+      final result = await sipChannel.invokeMethod<String>('diagnostics');
+      return result ?? 'native diagnostics empty';
+    } on PlatformException catch (error) {
+      return 'native diagnostics error ${error.code}: ${error.message}';
+    }
+  }
+
   void syncCameraPreviewForCall(Map<String, Object?> call) {
     final status = call['status']?.toString() ?? '';
     final isVideo = call['mediaType']?.toString() == 'video';
@@ -767,7 +776,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('企业 IM · v9 SIP去重修复', style: TextStyle(fontWeight: FontWeight.w700)),
+                  const Text('企业 IM · v10 SIP日志版', style: TextStyle(fontWeight: FontWeight.w700)),
                   Text('$statusText · ${peerIdController.text.trim()}', style: Theme.of(context).textTheme.bodySmall),
                 ],
               ),
@@ -948,6 +957,26 @@ class _MobileClientPageState extends State<MobileClientPage> {
                   OutlinedButton.icon(onPressed: loadCalls, icon: const Icon(Icons.history), label: const Text('记录')),
                   OutlinedButton.icon(onPressed: connected ? sendAuth : connectSocket, icon: const Icon(Icons.login), label: const Text('认证')),
                 ],
+              ),
+              const Divider(height: 24),
+              FutureBuilder<String>(
+                future: loadNativeDiagnostics(),
+                builder: (context, snapshot) {
+                  final text = snapshot.data ?? (snapshot.connectionState == ConnectionState.done ? 'native diagnostics empty' : 'native diagnostics loading...');
+                  return ExpansionTile(
+                    tilePadding: EdgeInsets.zero,
+                    title: const Text('Native SIP / crash log'),
+                    subtitle: Text(text.split('\n').first, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    children: [
+                      SizedBox(
+                        height: 180,
+                        child: SingleChildScrollView(
+                          child: SelectableText(text, style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
               const Divider(height: 24),
               Expanded(
