@@ -48,17 +48,17 @@ Add-Check `
 
 Add-Check `
     -Name "Flutter SIP diagnostics" `
-    -Ok ($mainActivityText -match 'invokeMethod\(\s*"sipEvent"' -and $mainActivityText -match 'remote video attach failed') `
-    -Pass "native SIP bridge reports state/error/video attach events to Flutter" `
-    -Warn "native SIP bridge does not expose detailed SIP/video errors to Flutter" `
+    -Ok ($mainActivityText -match 'invokeMethod\(\s*"sipEvent"' -and $mainActivityText -match 'remote video attach failed' -and $mainActivityText -match 'onRegState' -and $mainActivityText -match 'onCallState') `
+    -Pass "native SIP bridge reports registration, call state, error, and video attach events to Flutter" `
+    -Warn "native SIP bridge does not expose detailed registration/call/video errors to Flutter" `
     -Required
 
 $flutterMain = Join-Path $root "flutter-client\lib\main.dart"
 $flutterMainText = Read-TextSafe $flutterMain
 Add-Check `
     -Name "Flutter SIP error detail UI" `
-    -Ok ($flutterMainText -match 'setMethodCallHandler\(handleSipChannelCall\)' -and $flutterMainText -match 'SIP EVENT' -and $flutterMainText -match 'error: \$\{shortSipMessage') `
-    -Pass "Flutter listens for native SIP events and displays concise error details" `
+    -Ok ($flutterMainText -match 'setMethodCallHandler\(handleSipChannelCall\)' -and $flutterMainText -match 'SIP EVENT' -and $flutterMainText -match 'registration' -and $flutterMainText -match 'error: \$\{shortSipMessage') `
+    -Pass "Flutter listens for native SIP events and displays concise registration/error details" `
     -Warn "Flutter UI may still collapse native SIP failures to generic SIP error" `
     -Required
 

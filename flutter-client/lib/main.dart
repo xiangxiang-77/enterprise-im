@@ -143,7 +143,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
     setState(() {
       if (type == 'error') {
         sipStatus = message.isEmpty ? 'error' : 'error: ${shortSipMessage(message)}';
-      } else if (type == 'media' || type == 'video' || type == 'state') {
+      } else if (type == 'media' || type == 'video' || type == 'state' || type == 'registration' || type == 'call') {
         sipStatus = message.isEmpty ? type : shortSipMessage(message);
       }
       addLog('SIP EVENT $type $message');

@@ -31,7 +31,9 @@ import org.pjsip.pjsua2.CallOpParam
 import org.pjsip.pjsua2.Endpoint
 import org.pjsip.pjsua2.EpConfig
 import org.pjsip.pjsua2.OnCallMediaStateParam
+import org.pjsip.pjsua2.OnCallStateParam
 import org.pjsip.pjsua2.OnIncomingCallParam
+import org.pjsip.pjsua2.OnRegStateParam
 import org.pjsip.pjsua2.TransportConfig
 import org.pjsip.pjsua2.VideoWindow
 import org.pjsip.pjsua2.VideoWindowHandle
@@ -220,6 +222,7 @@ class MainActivity : FlutterActivity() {
         }
         return try {
             stopPjsua2()
+            activeCallId = callId
             activeMediaType = mediaType
             val endpoint = Endpoint()
             endpoint.libCreate()
@@ -245,6 +248,7 @@ class MainActivity : FlutterActivity() {
 
             val account = NativeAccount()
             account.create(accountConfig)
+            waitForRegistration(account)
             val nativeCall = if (outbound) {
                 val call = NativeCall(account)
                 val param = CallOpParam(true)
@@ -259,7 +263,6 @@ class MainActivity : FlutterActivity() {
             pjsipEndpoint = endpoint
             pjsipAccount = account
             pjsipCall = nativeCall
-            activeCallId = callId
             emitSipEvent("state", if (outbound) "dialing" else "listening")
             attachRemoteVideoWindow()
             mapOf(
@@ -337,6 +340,10 @@ class MainActivity : FlutterActivity() {
     }
 
     private inner class NativeAccount : Account() {
+        override fun onRegState(prm: OnRegStateParam) {
+            emitSipEvent("registration", "${prm.code} ${prm.reason}".trim())
+        }
+
         override fun onIncomingCall(prm: OnIncomingCallParam) {
             try {
                 val call = NativeCall(this, prm.callId)
@@ -354,6 +361,18 @@ class MainActivity : FlutterActivity() {
     }
 
     private inner class NativeCall(account: Account, callId: Int = -1) : Call(account, callId) {
+        override fun onCallState(prm: OnCallStateParam) {
+            try {
+                val info: CallInfo = getInfo()
+                val reason = info.lastReason ?: ""
+                val status = info.lastStatusCode
+                val state = info.stateText ?: "unknown"
+                emitSipEvent("call", "$state $status $reason".trim())
+            } catch (error: Exception) {
+                emitSipEvent("error", "call state failed: ${error.message}")
+            }
+        }
+
         override fun onCallMediaState(prm: OnCallMediaStateParam) {
             try {
                 val info: CallInfo = getInfo()
@@ -400,6 +419,26 @@ class MainActivity : FlutterActivity() {
         } catch (error: Exception) {
             emitSipEvent("error", "remote video attach failed: ${error.message}")
         }
+    }
+
+    private fun waitForRegistration(account: Account) {
+        val deadline = System.currentTimeMillis() + 3500
+        var lastStatus = 0
+        var lastStatusText = ""
+        while (System.currentTimeMillis() < deadline) {
+            val info = account.getInfo()
+            lastStatus = info.regStatus
+            lastStatusText = info.regStatusText ?: ""
+            if (lastStatus == pjsip_status_code.PJSIP_SC_OK) {
+                emitSipEvent("registration", "200 OK")
+                return
+            }
+            if (lastStatus >= 300) {
+                throw IllegalStateException("SIP registration failed: $lastStatus $lastStatusText")
+            }
+            Thread.sleep(100)
+        }
+        throw IllegalStateException("SIP registration timeout: $lastStatus $lastStatusText")
     }
 
     private fun emitSipEvent(type: String, message: String) {
