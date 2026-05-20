@@ -1,0 +1,32 @@
+# Build outputs
+.playwright-cli/
+build/
+dist/
+**/target/
+**/build/
+**/.gradle/
+**/.dart_tool/
+**/node_modules/
+**/__pycache__/
+*.pyc
+
+# Local runtime data
+im-server/data/
+im-server/derby.log
+im-server/*.log
+enterprise-im-desktop.sqlite
+
+# Local tools and installers
+aqtinstall.log
+build/vs_buildtools_2017.exe
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+.DS_Store
+
+# Secrets / local overrides
+.env
+*.local

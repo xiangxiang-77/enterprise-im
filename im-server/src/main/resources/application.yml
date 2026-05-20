@@ -1,0 +1,45 @@
+server:
+  port: ${HTTP_PORT:8080}
+
+spring:
+  application:
+    name: im-server
+  datasource:
+    url: ${DB_URL:jdbc:h2:file:./data/im-server;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH}
+    username: ${DB_USERNAME:sa}
+    password: ${DB_PASSWORD:}
+    driver-class-name: ${DB_DRIVER:org.h2.Driver}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+im:
+  tcp:
+    port: ${TCP_PORT:9000}
+  auth:
+    demo-token-prefix: ${DEMO_TOKEN_PREFIX:demo-token-}
+    admin-password: ${ADMIN_PASSWORD:admin123}
+  redis:
+    url: ${REDIS_URL:redis://localhost:6379}
+  storage:
+    endpoint: ${MINIO_ENDPOINT:http://localhost:9001}
+    access-key: ${MINIO_ACCESS_KEY:minioadmin}
+    secret-key: ${MINIO_SECRET_KEY:minioadmin}
+    bucket: ${MINIO_BUCKET:enterprise-im}
+  realtime:
+    turn-url: ${TURN_URL:turn:10.200.71.31:3478}
+    turn-username: ${TURN_USERNAME:enterprise-im}
+    turn-password: ${TURN_PASSWORD:enterprise-im-secret}
+    pjsip-signal-url: ${PJSIP_SIGNAL_URL:http://localhost:7070}
+    sip-domain: ${SIP_DOMAIN:enterprise-im.local}
+    sip-registrar: ${SIP_REGISTRAR:sip:127.0.0.1:5060}
+    sip-android-registrar: ${SIP_ANDROID_REGISTRAR:sip:10.200.71.31:5060}
+    sip-realm: ${SIP_REALM:enterprise-im.local}
+    sip-password: ${SIP_PASSWORD:enterprise-im-sip-secret}
+    probe-timeout-ms: ${REALTIME_PROBE_TIMEOUT_MS:500}

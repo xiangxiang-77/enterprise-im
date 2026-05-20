@@ -1,0 +1,5 @@
+*
+!Dockerfile
+!Dockerfile.build
+!target/
+!target/im-server-0.1.0-SNAPSHOT.jar

@@ -1,0 +1,6 @@
+logging:
+  level:
+    root: WARN
+    com.enterpriseim.server: INFO
+    org.springframework: WARN
+    org.flywaydb: WARN
