@@ -110,12 +110,14 @@ class _MobileClientPageState extends State<MobileClientPage> {
   @override
   void initState() {
     super.initState();
+    sipChannel.setMethodCallHandler(handleSipChannelCall);
     unawaited(initLocalStore());
     unawaited(loadCallReadiness());
   }
 
   @override
   void dispose() {
+    sipChannel.setMethodCallHandler(null);
     subscription?.cancel();
     socket?.destroy();
     cameraController?.dispose();
@@ -129,6 +131,29 @@ class _MobileClientPageState extends State<MobileClientPage> {
     conversationIdController.dispose();
     messageController.dispose();
     super.dispose();
+  }
+
+  Future<void> handleSipChannelCall(MethodCall call) async {
+    if (call.method != 'sipEvent') return;
+    final args = call.arguments;
+    final event = args is Map ? Map<Object?, Object?>.from(args) : <Object?, Object?>{};
+    final type = event['type']?.toString() ?? 'event';
+    final message = event['message']?.toString() ?? '';
+    if (!mounted) return;
+    setState(() {
+      if (type == 'error') {
+        sipStatus = message.isEmpty ? 'error' : 'error: ${shortSipMessage(message)}';
+      } else if (type == 'media' || type == 'video' || type == 'state') {
+        sipStatus = message.isEmpty ? type : shortSipMessage(message);
+      }
+      addLog('SIP EVENT $type $message');
+    });
+  }
+
+  String shortSipMessage(String message) {
+    final compact = message.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (compact.length <= 80) return compact;
+    return '${compact.substring(0, 77)}...';
   }
 
   Future<void> initLocalStore() async {
@@ -442,24 +467,39 @@ class _MobileClientPageState extends State<MobileClientPage> {
         'turnUsername': config['turnUsername']?.toString() ?? '',
         'turnPassword': config['turnPassword']?.toString() ?? '',
       });
-      sipStatus = result?['status']?.toString() ?? 'unknown';
-      nativeCallId = callId;
-      addLog('SIP START $sipStatus ${jsonEncode(result)}');
+      if (!mounted) return;
+      setState(() {
+        sipStatus = result?['status']?.toString() ?? 'unknown';
+        nativeCallId = callId;
+        addLog('SIP START $sipStatus ${jsonEncode(result)}');
+      });
     } on PlatformException catch (error) {
-      sipStatus = 'error';
-      addLog('SIP ERROR ${error.code}: ${error.message}');
+      final message = [error.code, error.message]
+          .where((part) => part != null && part.toString().isNotEmpty)
+          .join(': ');
+      if (!mounted) return;
+      setState(() {
+        sipStatus = 'error: ${shortSipMessage(message)}';
+        addLog('SIP ERROR ${error.code}: ${error.message}');
+      });
     }
   }
 
   Future<void> stopNativeSip() async {
     try {
       final result = await sipChannel.invokeMethod<Map<Object?, Object?>>('stop');
-      sipStatus = result?['status']?.toString() ?? 'stopped';
-      nativeCallId = null;
-      addLog('SIP STOP $sipStatus');
+      if (!mounted) return;
+      setState(() {
+        sipStatus = result?['status']?.toString() ?? 'stopped';
+        nativeCallId = null;
+        addLog('SIP STOP $sipStatus');
+      });
     } on PlatformException catch (error) {
-      sipStatus = 'error';
-      addLog('SIP STOP ERROR ${error.code}: ${error.message}');
+      if (!mounted) return;
+      setState(() {
+        sipStatus = 'error: ${shortSipMessage('${error.code}: ${error.message ?? ''}')}';
+        addLog('SIP STOP ERROR ${error.code}: ${error.message}');
+      });
     }
   }
 

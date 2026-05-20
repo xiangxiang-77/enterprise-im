@@ -41,9 +41,25 @@ $mainActivity = Join-Path $root "flutter-client\android\app\src\main\kotlin\com\
 $mainActivityText = Read-TextSafe $mainActivity
 Add-Check `
     -Name "Flutter bridge video args" `
-    -Ok ($mainActivityText -match 'videoCount\s*=\s*if\s*\(\s*mediaType\s*==\s*"video"\s*\)\s*1\s*else\s*0' -and $mainActivityText -match 'Manifest\.permission\.CAMERA') `
-    -Pass "pjsua2 video calls request videoCount=1 and camera permission" `
-    -Warn "MainActivity.kt does not prove pjsua2 videoCount=1 plus CAMERA permission" `
+    -Ok ($mainActivityText -match 'videoCount\s*=\s*if\s*\(\s*mediaType\s*==\s*"video"\s*\)\s*1\s*else\s*0' -and $mainActivityText -match 'videoCount\s*=\s*if\s*\(\s*activeMediaType\s*==\s*"video"\s*\)\s*1\s*else\s*0' -and $mainActivityText -match 'Manifest\.permission\.CAMERA') `
+    -Pass "pjsua2 outbound and incoming video calls request videoCount=1 and camera permission" `
+    -Warn "MainActivity.kt does not prove pjsua2 outbound/incoming videoCount=1 plus CAMERA permission" `
+    -Required
+
+Add-Check `
+    -Name "Flutter SIP diagnostics" `
+    -Ok ($mainActivityText -match 'invokeMethod\(\s*"sipEvent"' -and $mainActivityText -match 'remote video attach failed') `
+    -Pass "native SIP bridge reports state/error/video attach events to Flutter" `
+    -Warn "native SIP bridge does not expose detailed SIP/video errors to Flutter" `
+    -Required
+
+$flutterMain = Join-Path $root "flutter-client\lib\main.dart"
+$flutterMainText = Read-TextSafe $flutterMain
+Add-Check `
+    -Name "Flutter SIP error detail UI" `
+    -Ok ($flutterMainText -match 'setMethodCallHandler\(handleSipChannelCall\)' -and $flutterMainText -match 'SIP EVENT' -and $flutterMainText -match 'error: \$\{shortSipMessage') `
+    -Pass "Flutter listens for native SIP events and displays concise error details" `
+    -Warn "Flutter UI may still collapse native SIP failures to generic SIP error" `
     -Required
 
 $manifest = Join-Path $root "flutter-client\android\app\src\main\AndroidManifest.xml"
@@ -53,6 +69,15 @@ Add-Check `
     -Ok ($manifestText -match 'android\.permission\.RECORD_AUDIO' -and $manifestText -match 'android\.permission\.CAMERA' -and $manifestText -match 'android\.permission\.MODIFY_AUDIO_SETTINGS') `
     -Pass "source manifest declares microphone, camera, and audio routing permissions" `
     -Warn "AndroidManifest.xml missing required microphone/camera/audio permissions" `
+    -Required
+
+$asteriskConfig = Join-Path $root "asterisk\pjsip.conf"
+$asteriskText = Read-TextSafe $asteriskConfig
+Add-Check `
+    -Name "Asterisk video codecs" `
+    -Ok ($asteriskText -match '(?m)^allow=.*(h264|vp8)') `
+    -Pass "PJSIP endpoint template allows at least one video codec" `
+    -Warn "Asterisk PJSIP endpoint template allows audio only; remote video negotiation will fail" `
     -Required
 
 $jniRoot = Join-Path $root "flutter-client\android\app\src\main\jniLibs"

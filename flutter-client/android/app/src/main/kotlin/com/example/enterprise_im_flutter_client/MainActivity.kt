@@ -43,7 +43,9 @@ import org.pjsip.pjsua2.pjsua_call_media_status
 
 class MainActivity : FlutterActivity() {
     private val channelName = "enterprise_im/sip"
+    private var sipChannel: MethodChannel? = null
     private var activeCallId: String? = null
+    private var activeMediaType: String = "audio"
     private var sipManager: SipManager? = null
     private var localProfile: SipProfile? = null
     private var audioCall: SipAudioCall? = null
@@ -60,7 +62,8 @@ class MainActivity : FlutterActivity() {
             .platformViewsController
             .registry
             .registerViewFactory("enterprise_im/pjsip_video_view", PjsipVideoViewFactory(this))
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).setMethodCallHandler { call, result ->
+        sipChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+        sipChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "start" -> {
                     val args = call.arguments as? Map<*, *>
@@ -217,6 +220,7 @@ class MainActivity : FlutterActivity() {
         }
         return try {
             stopPjsua2()
+            activeMediaType = mediaType
             val endpoint = Endpoint()
             endpoint.libCreate()
             val epConfig = EpConfig()
@@ -225,11 +229,16 @@ class MainActivity : FlutterActivity() {
             endpoint.libInit(epConfig)
             endpoint.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_UDP, TransportConfig())
             endpoint.libStart()
+            if (!endpoint.libIsThreadRegistered()) {
+                endpoint.libRegisterThread("flutter-sip")
+            }
 
             val accountConfig = AccountConfig()
             accountConfig.idUri = "sip:$username@${target.domain}"
             accountConfig.regConfig.registrarUri = registrar
             accountConfig.regConfig.registerOnAdd = true
+            accountConfig.videoConfig.autoShowIncoming = true
+            accountConfig.videoConfig.autoTransmitOutgoing = true
             val creds = AuthCredInfoVector()
             creds.add(AuthCredInfo("digest", "*", username, 0, password))
             accountConfig.sipConfig.authCreds = creds
@@ -251,6 +260,7 @@ class MainActivity : FlutterActivity() {
             pjsipAccount = account
             pjsipCall = nativeCall
             activeCallId = callId
+            emitSipEvent("state", if (outbound) "dialing" else "listening")
             attachRemoteVideoWindow()
             mapOf(
                 "status" to if (outbound) "dialing" else "listening",
@@ -264,6 +274,7 @@ class MainActivity : FlutterActivity() {
                 "message" to if (outbound) "PJSIP pjsua2 outbound call started" else "PJSIP pjsua2 incoming listener started"
             )
         } catch (error: Exception) {
+            emitSipEvent("error", error.message ?: "pjsua2 exception")
             stopPjsua2()
             mapOf("status" to "error", "code" to "pjsua2_exception", "message" to error.message)
         }
@@ -283,6 +294,7 @@ class MainActivity : FlutterActivity() {
             localProfile = null
             sipManager = null
             activeCallId = null
+            activeMediaType = "audio"
         }
         return mapOf(
             "status" to "stopped",
@@ -328,11 +340,15 @@ class MainActivity : FlutterActivity() {
         override fun onIncomingCall(prm: OnIncomingCallParam) {
             try {
                 val call = NativeCall(this, prm.callId)
-                val answer = CallOpParam()
+                val answer = CallOpParam(true)
                 answer.statusCode = pjsip_status_code.PJSIP_SC_OK
+                answer.opt.audioCount = 1
+                answer.opt.videoCount = if (activeMediaType == "video") 1 else 0
                 call.answer(answer)
                 pjsipCall = call
-            } catch (_: Exception) {
+                emitSipEvent("incoming", "answered ${activeMediaType}")
+            } catch (error: Exception) {
+                emitSipEvent("error", "incoming answer failed: ${error.message}")
             }
         }
     }
@@ -349,15 +365,18 @@ class MainActivity : FlutterActivity() {
                         val manager = pjsipEndpoint?.audDevManager() ?: return
                         audioMedia.startTransmit(manager.playbackDevMedia)
                         manager.captureDevMedia.startTransmit(audioMedia)
+                        emitSipEvent("media", "audio active")
                     }
                     if (mediaInfo.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
                         mediaInfo.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE
                     ) {
                         remoteVideoWindow = mediaInfo.videoWindow ?: VideoWindow(mediaInfo.videoIncomingWindowId)
+                        emitSipEvent("media", "video active")
                         attachRemoteVideoWindow()
                     }
                 }
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                emitSipEvent("error", "media state failed: ${error.message}")
             }
         }
     }
@@ -377,7 +396,23 @@ class MainActivity : FlutterActivity() {
             videoWindowHandle.setHandle(windowHandle)
             videoWindow.setWindow(videoWindowHandle)
             videoWindow.Show(true)
-        } catch (_: Exception) {
+            emitSipEvent("video", "remote window attached")
+        } catch (error: Exception) {
+            emitSipEvent("error", "remote video attach failed: ${error.message}")
+        }
+    }
+
+    private fun emitSipEvent(type: String, message: String) {
+        runOnUiThread {
+            sipChannel?.invokeMethod(
+                "sipEvent",
+                mapOf(
+                    "type" to type,
+                    "message" to message,
+                    "callId" to activeCallId,
+                    "mediaType" to activeMediaType
+                )
+            )
         }
     }
 
