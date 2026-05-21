@@ -28,7 +28,6 @@ void SipMediaClient::start(const QJsonObject &mediaConfig, const QString &callId
     const QString username = value(mediaConfig, "sipUsername");
     const QString password = value(mediaConfig, "sipPassword");
     const QString registrar = value(mediaConfig, "sipRegistrar");
-    const QString realm = value(mediaConfig, "sipRealm");
     const QString selfUri = value(mediaConfig, "selfSipUri");
     const QString calleeUri = value(mediaConfig, "calleeSipUri");
 
@@ -42,9 +41,10 @@ void SipMediaClient::start(const QJsonObject &mediaConfig, const QString &callId
     }
 
     QStringList args;
-    args << "--id" << selfUri
+    args << "--local-port=5062"
+         << "--id" << selfUri
          << "--registrar" << registrar
-         << "--realm" << (realm.isEmpty() ? QString("*") : realm)
+         << "--realm=*"
          << "--username" << username
          << "--password" << password
          << "--auto-conf"
@@ -53,8 +53,6 @@ void SipMediaClient::start(const QJsonObject &mediaConfig, const QString &callId
     if (mediaType == "video") {
         args << "--video";
         emit logLine("SIP VIDEO enabled; camera/render success still depends on real device runtime.");
-    } else {
-        args << "--null-video";
     }
 
     if (outbound && !calleeUri.isEmpty()) {
