@@ -1,6 +1,8 @@
 package com.example.enterprise_im_flutter_client
 
 import android.Manifest
+import android.media.AudioManager
+import android.hardware.camera2.CameraManager
 import android.content.pm.PackageManager
 import android.net.sip.SipAudioCall
 import android.net.sip.SipException
@@ -21,6 +23,7 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.StandardMessageCodec
 import io.flutter.plugin.platform.PlatformView
 import io.flutter.plugin.platform.PlatformViewFactory
+import org.pjsip.PjCameraInfo2
 import org.pjsip.pjsua2.Account
 import org.pjsip.pjsua2.AccountConfig
 import org.pjsip.pjsua2.AudioMedia
@@ -76,6 +79,7 @@ class MainActivity : FlutterActivity() {
             previousHandler?.uncaughtException(thread, throwable)
         }
         appendNativeLog("APP onCreate")
+        appendNativeLog("APP native build v13 pjsip-stability")
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -268,6 +272,10 @@ class MainActivity : FlutterActivity() {
             activeCallId = callId
             activeMediaType = mediaType
             appendNativeLog("PJSUA2 create endpoint target=${target.host}:${target.port} domain=${target.domain}")
+            if (mediaType == "video") {
+                PjCameraInfo2.SetCameraManager(getSystemService(Context.CAMERA_SERVICE) as CameraManager)
+                appendNativeLog("VIDEO Camera2 manager attached for PJSIP")
+            }
             val endpoint = Endpoint()
             endpoint.libCreate()
             val epConfig = EpConfig()
@@ -295,6 +303,7 @@ class MainActivity : FlutterActivity() {
             waitForRegistration(account)
             appendNativeLog("PJSUA2 registered username=$username outbound=$outbound")
             val nativeCall = if (outbound) {
+                configureAudioRoute()
                 val call = NativeCall(account)
                 val param = CallOpParam(true)
                 param.opt.audioCount = 1
@@ -334,6 +343,7 @@ class MainActivity : FlutterActivity() {
     private fun stopSipCall(): Map<String, Any?> {
         val stopped = activeCallId
         stopPjsua2()
+        restoreAudioRoute()
         try {
             audioCall?.close()
             audioCall = null
@@ -358,7 +368,7 @@ class MainActivity : FlutterActivity() {
         synchronized(pjsipLock) {
             appendNativeLog("PJSUA2 stop begin activeCallId=$activeCallId")
             try {
-                pjsipCall?.hangup(CallOpParam().apply { statusCode = pjsip_status_code.PJSIP_SC_DECLINE })
+                pjsipCall?.hangup(CallOpParam())
             } catch (_: Exception) {
             }
             try {
@@ -402,6 +412,7 @@ class MainActivity : FlutterActivity() {
 
         override fun onIncomingCall(prm: OnIncomingCallParam) {
             try {
+                configureAudioRoute()
                 val call = NativeCall(this, prm.callId)
                 val answer = CallOpParam(true)
                 answer.statusCode = pjsip_status_code.PJSIP_SC_OK
@@ -518,6 +529,29 @@ class MainActivity : FlutterActivity() {
                     "mediaType" to activeMediaType
                 )
             )
+        }
+    }
+
+    private fun configureAudioRoute() {
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            audioManager.isSpeakerphoneOn = true
+            audioManager.isMicrophoneMute = false
+            appendNativeLog("AUDIO route communication speaker=${audioManager.isSpeakerphoneOn}")
+        } catch (error: Exception) {
+            appendNativeLog("ERROR audio route ${error.stackTraceToStringSafe()}")
+        }
+    }
+
+    private fun restoreAudioRoute() {
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            audioManager.isSpeakerphoneOn = false
+            audioManager.mode = AudioManager.MODE_NORMAL
+            appendNativeLog("AUDIO route restored")
+        } catch (error: Exception) {
+            appendNativeLog("ERROR audio restore ${error.stackTraceToStringSafe()}")
         }
     }
 

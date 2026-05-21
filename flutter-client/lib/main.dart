@@ -70,7 +70,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
   final messages = <ChatEntry>[
     ChatEntry(
       sender: '系统',
-      content: '企业 IM 手机端 v12 已就绪：PJSIP 绑定保留修复版 2026-05-20',
+      content: '企业 IM 手机端 v13 已就绪：PJSIP 稳定通话版 2026-05-21',
       direction: 'system',
       createdAt: DateTime.now(),
     ),
@@ -432,6 +432,10 @@ class _MobileClientPageState extends State<MobileClientPage> {
     if (callId == null || callId.isEmpty) {
       setState(() => addLog('CALL ERROR no active call'));
       return;
+    }
+    if (action == 'reject' || action == 'hangup') {
+      await stopNativeSip();
+      await stopCameraPreview();
     }
     await runCallAction(() async {
       final data = await postJson('/api/calls/$callId/$action', {'actorId': userIdController.text.trim()});
@@ -796,7 +800,7 @@ class _MobileClientPageState extends State<MobileClientPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('企业 IM · v12 PJSIP绑定修复', style: TextStyle(fontWeight: FontWeight.w700)),
+                  const Text('企业 IM · v13 PJSIP稳定通话', style: TextStyle(fontWeight: FontWeight.w700)),
                   Text('$statusText · ${peerIdController.text.trim()}', style: Theme.of(context).textTheme.bodySmall),
                 ],
               ),

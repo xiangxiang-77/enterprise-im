@@ -811,6 +811,8 @@ void MainWindow::transitionCall(const QString &action)
     if (action == "reject") setActionStatus("正在拒绝通话...");
     if (action == "hangup") setActionStatus("正在挂断通话...");
     if (action == "reject" || action == "hangup") {
+        sipMediaClient->stop();
+        nativeStartedCallId.clear();
         stopLocalCameraPreview();
     }
     apiPost("/api/calls/" + activeCallId + "/" + action, body);
