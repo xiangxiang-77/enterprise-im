@@ -138,8 +138,8 @@ $sipMediaClient = Join-Path $root "qt-client\src\SipMediaClient.cpp"
 $sipMediaText = Read-TextSafe $sipMediaClient
 Add-Check `
     -Name "Qt video launch path" `
-    -Ok ($sipMediaText -match 'mediaType\s*==\s*"video"' -and $sipMediaText -match '--video' -and $sipMediaText -match '--auto-conf' -and $sipMediaText -match '--null-video') `
-    -Pass "desktop uses --video for video calls, --null-video for audio calls, and auto-conf for media wiring" `
+    -Ok ($sipMediaText -match 'mediaType\s*==\s*"video"' -and $sipMediaText -match '--video' -and $sipMediaText -match '--auto-conf' -and $sipMediaText -match '--local-port=5062' -and $sipMediaText -match '--realm=\*' -and $sipMediaText -notmatch '--null-video') `
+    -Pass "desktop uses --video for video calls, fixed local SIP port, wildcard realm auth, and auto-conf media wiring" `
     -Warn "desktop pjsua launch path does not prove explicit video plus audio media wiring" `
     -Required
 

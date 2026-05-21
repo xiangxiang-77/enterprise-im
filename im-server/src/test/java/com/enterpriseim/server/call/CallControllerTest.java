@@ -87,8 +87,8 @@ class CallControllerTest {
                 .getResponse()
                 .getContentAsString();
         JsonNode androidData = objectMapper.readTree(androidJson).path("data");
-        assertThat(androidData.path("sipRegistrar").asText()).isEqualTo("sip:10.200.39.178:5060");
-        assertThat(androidData.path("calleeSipUri").asText()).isEqualTo("sip:u_media_b@10.200.39.178:5060");
+        assertThat(androidData.path("sipRegistrar").asText()).isEqualTo("sip:10.200.71.31:5060");
+        assertThat(androidData.path("calleeSipUri").asText()).isEqualTo("sip:u_media_b@10.200.71.31:5060");
     }
 
     @Test

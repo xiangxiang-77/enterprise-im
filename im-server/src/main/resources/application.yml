@@ -40,6 +40,6 @@ im:
     sip-domain: ${SIP_DOMAIN:enterprise-im.local}
     sip-registrar: ${SIP_REGISTRAR:sip:127.0.0.1:5060}
     sip-android-registrar: ${SIP_ANDROID_REGISTRAR:sip:10.200.71.31:5060}
-    sip-realm: ${SIP_REALM:enterprise-im.local}
+    sip-realm: ${SIP_REALM:asterisk}
     sip-password: ${SIP_PASSWORD:enterprise-im-sip-secret}
     probe-timeout-ms: ${REALTIME_PROBE_TIMEOUT_MS:500}

@@ -35,7 +35,7 @@ services:
       SIP_DOMAIN: ${SIP_DOMAIN:-enterprise-im.local}
       SIP_REGISTRAR: ${SIP_REGISTRAR:-sip:127.0.0.1:5060}
       SIP_ANDROID_REGISTRAR: ${SIP_ANDROID_REGISTRAR:-sip:10.200.71.31:5060}
-      SIP_REALM: ${SIP_REALM:-enterprise-im.local}
+      SIP_REALM: ${SIP_REALM:-asterisk}
       SIP_PASSWORD: ${SIP_PASSWORD:-enterprise-im-sip-secret}
       DEMO_TOKEN_PREFIX: ${DEMO_TOKEN_PREFIX:-demo-token-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
@@ -53,7 +53,7 @@ services:
       PJSUA_BIN: ${PJSUA_BIN:-/opt/pjsip/bin/pjsua}
       PJSIP_SIP_DOMAIN: ${PJSIP_SIP_DOMAIN:-enterprise-im.local}
       PJSIP_REGISTRAR: ${PJSIP_REGISTRAR:-sip:asterisk:5060}
-      PJSIP_REALM: ${PJSIP_REALM:-enterprise-im.local}
+      PJSIP_REALM: ${PJSIP_REALM:-asterisk}
       PJSIP_USERNAME: ${PJSIP_USERNAME:-u_gateway}
       PJSIP_PASSWORD: ${PJSIP_PASSWORD:-enterprise-im-sip-secret}
       PJSUA_EXTRA_ARGS: ${PJSUA_EXTRA_ARGS:-}

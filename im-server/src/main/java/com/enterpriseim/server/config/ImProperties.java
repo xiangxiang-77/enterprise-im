@@ -121,8 +121,8 @@ public class ImProperties {
         private String pjsipSignalUrl = "http://localhost:7070";
         private String sipDomain = "enterprise-im.local";
         private String sipRegistrar = "sip:127.0.0.1:5060";
-        private String sipAndroidRegistrar = "sip:10.200.39.178:5060";
-        private String sipRealm = "enterprise-im.local";
+        private String sipAndroidRegistrar = "sip:10.200.71.31:5060";
+        private String sipRealm = "asterisk";
         private String sipPassword = "enterprise-im-sip-secret";
         private int probeTimeoutMs = 500;
 
