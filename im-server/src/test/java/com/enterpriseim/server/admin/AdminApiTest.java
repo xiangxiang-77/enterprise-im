@@ -12,6 +12,10 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -23,6 +27,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "im.tcp.port=19004",
+        "im.storage.local-root=${java.io.tmpdir}/enterprise-im-admin-test-storage",
         "spring.datasource.url=jdbc:h2:mem:admin-test;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"
 })
 @AutoConfigureMockMvc
@@ -63,6 +68,10 @@ class AdminApiTest {
                 "VALUES (?, 'single', ?)\n", conversationId, to);
         jdbcTemplate.update("INSERT INTO messages(id, conversation_id, sender_id, type, content, status, client_seq)\n" +
                 "VALUES (?, ?, ?, 'text', 'overview message', 'sent', ?)\n", "m_overview_" + suffix, conversationId, from, requestId);
+        jdbcTemplate.update("INSERT INTO files(id, uploader_id, object_key, original_name, content_type, size_bytes, status)\n" +
+                "VALUES (?, ?, ?, 'overview.pdf', 'application/pdf', 1234, 'available')\n", "file_overview_" + suffix, from, "overview/" + suffix);
+        jdbcTemplate.update("INSERT INTO risk_events(id, event_type, user_id, conversation_id, detail)\n" +
+                "VALUES (?, 'overview_risk', ?, ?, 'risk overview')\n", "risk_overview_" + suffix, from, conversationId);
         jdbcTemplate.update("INSERT INTO call_records(id, conversation_id, caller_id, callee_id, media_type, status, turn_session_id)\n" +
                 "VALUES (?, ?, ?, ?, 'audio', 'ringing', ?)\n", "call_overview_active_" + suffix, conversationId, from, to, "turn_overview_active_" + suffix);
         jdbcTemplate.update("INSERT INTO call_records(id, conversation_id, caller_id, callee_id, media_type, status, answered_at, turn_session_id)\n" +
@@ -85,12 +94,40 @@ class AdminApiTest {
         assertThat(data.path("activeCalls").asInt()).isGreaterThanOrEqualTo(1);
         assertThat(data.path("answeredCalls").asInt()).isGreaterThanOrEqualTo(1);
         assertThat(data.path("missedCalls").asInt()).isGreaterThanOrEqualTo(1);
+        assertThat(data.path("messageTrend")).isNotEmpty();
+        assertThat(data.path("storageBreakdown").findValuesAsText("kind")).contains("application/pdf");
+        assertThat(data.path("riskTrend")).isNotEmpty();
+        assertThat(data.path("permissionMatrix").findValuesAsText("role")).contains("SUPER_ADMIN", "SECURITY_AUDITOR");
     }
 
     @Test
     void rejectsAdminApiWithoutToken() throws Exception {
         mockMvc.perform(get("/api/admin/users").param("limit", "20"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void adminLoginAndMeExposePermissionSet() throws Exception {
+        val loginJson = mockMvc.perform(post("/api/admin/auth/login")
+                        .contentType("application/json")
+                        .content("{\"phone\":\"18800000000\",\"password\":\"admin123\"}\n"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        val loginData = objectMapper.readTree(loginJson).path("data");
+        assertThat(loginData.path("permissions").toString()).contains("dashboard.read", "admin.write", "advanced.read");
+
+        val meJson = mockMvc.perform(get("/api/admin/auth/me")
+                        .header("Authorization", "Bearer " + loginData.path("token").asText()))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        val meData = objectMapper.readTree(meJson).path("data");
+        assertThat(meData.path("role").asText()).isEqualTo("SUPER_ADMIN");
+        assertThat(meData.path("permissions").toString()).contains("organization.write", "resources.write");
     }
 
     @Test
@@ -110,6 +147,48 @@ class AdminApiTest {
         JsonNode root = objectMapper.readTree(json);
         assertThat(root.path("success").asBoolean()).isTrue();
         assertThat(root.path("data").findValuesAsText("id")).contains(userId);
+    }
+
+    @Test
+    void updatesUserProfileAndListsDeviceSessions() throws Exception {
+        val suffix = UUID.randomUUID().toString();
+        val token = adminToken();
+        val enterpriseId = "ent_profile_" + suffix;
+        val departmentId = "dep_profile_" + suffix;
+        val userId = "u_profile_" + suffix;
+        jdbcTemplate.update("INSERT INTO enterprises(id, name, code) VALUES (?, 'Profile Enterprise', ?)", enterpriseId, "profile_" + Math.abs(suffix.hashCode()));
+        jdbcTemplate.update("INSERT INTO departments(id, enterprise_id, name, sort_order) VALUES (?, ?, 'Product', 1)", departmentId, enterpriseId);
+        userService.ensureUser(userId, "Profile Before", "184" + Math.abs(suffix.hashCode()));
+        jdbcTemplate.update("UPDATE users SET enterprise_id = ? WHERE id = ?", enterpriseId, userId);
+        jdbcTemplate.update("INSERT INTO device_sessions(id, user_id, device_type, device_name, token_hash, online, last_seen_at, expires_at)\n" +
+                        "VALUES (?, ?, 'desktop', 'Qt Client', 'hash', true, CURRENT_TIMESTAMP, ?)\n",
+                "session_profile_" + suffix, userId, Timestamp.from(Instant.now().plusSeconds(3600)));
+
+        val profileJson = mockMvc.perform(patch("/api/admin/users/{userId}/profile", userId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content(String.format("{\"displayName\":\"Profile After\",\"email\":\"profile%s@example.com\",\"avatarUrl\":\"https://cdn.example.com/a.png\",\"shortNo\":\"sn%s\",\"gender\":\"female\",\"signature\":\"ready\",\"positionName\":\"Product Manager\"}\n",
+                                Math.abs(suffix.hashCode()), Math.abs((suffix + "short").hashCode()))))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        val profile = objectMapper.readTree(profileJson).path("data");
+        assertThat(profile.path("displayName").asText()).isEqualTo("Profile After");
+        assertThat(profile.path("positionName").asText()).isEqualTo("Product Manager");
+        assertThat(profile.path("signature").asText()).isEqualTo("ready");
+        assertThat(jdbcTemplate.queryForObject("SELECT position_name FROM department_members WHERE user_id = ?", String.class, userId)).isEqualTo("Product Manager");
+
+        val sessionsJson = mockMvc.perform(get("/api/admin/users/{userId}/device-sessions", userId)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode sessions = objectMapper.readTree(sessionsJson).path("data");
+        assertThat(sessions.findValuesAsText("deviceName")).contains("Qt Client");
+        assertThat(sessions.findValuesAsText("deviceType")).contains("desktop");
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM audit_logs WHERE action = 'USER_PROFILE_UPDATE' AND target_id = ?", Integer.class, userId)).isEqualTo(1);
     }
 
     @Test
@@ -384,6 +463,79 @@ class AdminApiTest {
     }
 
     @Test
+    void adminControlsFileResourceStatusAndTransferLogs() throws Exception {
+        val suffix = UUID.randomUUID().toString();
+        val ownerId = "u_file_admin_" + suffix;
+        val fileId = "file_admin_" + suffix;
+        userService.ensureUser(ownerId, "File Admin Owner", "168" + Math.abs(suffix.hashCode()));
+        jdbcTemplate.update("INSERT INTO files(id, uploader_id, object_key, original_name, content_type, size_bytes, status)\n" +
+                "VALUES (?, ?, ?, 'strict.pdf', 'application/pdf', 16, 'available')\n", fileId, ownerId, "objects/strict.pdf");
+        jdbcTemplate.update("INSERT INTO file_transfer_logs(id, file_id, user_id, direction, progress, status)\n" +
+                "VALUES (?, ?, ?, 'download', 100, 'completed')\n", "ft_admin_" + suffix, fileId, ownerId);
+
+        val token = adminToken();
+        val transfersJson = mockMvc.perform(get("/api/admin/files/{fileId}/transfers", fileId)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertThat(objectMapper.readTree(transfersJson).path("data").findValuesAsText("direction")).contains("download");
+
+        mockMvc.perform(patch("/api/admin/files/{fileId}/status", fileId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content("{\"status\":\"disabled\"}\n"))
+                .andExpect(status().isOk());
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM files WHERE id = ?", String.class, fileId)).isEqualTo("disabled");
+
+        mockMvc.perform(delete("/api/admin/files/{fileId}", fileId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content("{\"confirmText\":\"NOPE\"}\n"))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(delete("/api/admin/files/{fileId}", fileId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content("{\"confirmText\":\"CONFIRM\"}\n"))
+                .andExpect(status().isOk());
+
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM files WHERE id = ?", String.class, fileId)).isEqualTo("deleted");
+        val auditCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM audit_logs WHERE target_id = ? AND action IN ('FILE_STATUS_UPDATE', 'FILE_DELETE')", Integer.class, fileId);
+        assertThat(auditCount).isEqualTo(2);
+    }
+
+    @Test
+    void adminRunsFileLifecycleCleanup() throws Exception {
+        val suffix = UUID.randomUUID().toString();
+        val ownerId = "u_file_lifecycle_" + suffix;
+        val fileId = "file_lifecycle_" + suffix;
+        val objectKey = ownerId + "/" + fileId + "/expired.pdf";
+        val path = Paths.get(System.getProperty("java.io.tmpdir"), "enterprise-im-admin-test-storage", "enterprise-im", objectKey);
+        Files.createDirectories(path.getParent());
+        Files.write(path, "expired".getBytes("UTF-8"));
+        userService.ensureUser(ownerId, "Lifecycle Owner", "169" + Math.abs(suffix.hashCode()));
+        jdbcTemplate.update("INSERT INTO files(id, uploader_id, object_key, original_name, content_type, size_bytes, status, created_at)\n" +
+                "VALUES (?, ?, ?, 'expired.pdf', 'application/pdf', 7, 'available', ?)\n", fileId, ownerId, objectKey, Timestamp.from(Instant.now().minusSeconds(86400)));
+        if (jdbcTemplate.queryForObject("SELECT COUNT(*) FROM resource_policies WHERE policy_key = 'file_retention_days'", Integer.class) == 0) {
+            jdbcTemplate.update("INSERT INTO resource_policies(id, policy_key, policy_value) VALUES (?, 'file_retention_days', '0')", "policy_lifecycle_" + suffix);
+        } else {
+            jdbcTemplate.update("UPDATE resource_policies SET policy_value = '0' WHERE policy_key = 'file_retention_days'");
+        }
+
+        val cleanupJson = mockMvc.perform(post("/api/admin/files/lifecycle-cleanup")
+                        .header("Authorization", "Bearer " + adminToken()))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertThat(objectMapper.readTree(cleanupJson).path("data").path("expiredFiles").asInt()).isGreaterThanOrEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM files WHERE id = ?", String.class, fileId)).isEqualTo("deleted");
+        assertThat(Files.exists(path)).isFalse();
+        jdbcTemplate.update("UPDATE resource_policies SET policy_value = '365' WHERE policy_key = 'file_retention_days'");
+    }
+
+    @Test
     void exposesCallConnectivityProbeForAdminConsole() throws Exception {
         val json = mockMvc.perform(get("/api/admin/call-connectivity")
                         .header("Authorization", "Bearer " + adminToken()))
@@ -423,5 +575,104 @@ class AdminApiTest {
                 "WHERE action = 'USER_STATUS_UPDATE' AND target_id = ?\n", Integer.class, userId);
         assertThat(status).isEqualTo("disabled");
         assertThat(auditCount).isEqualTo(1);
+    }
+
+    @Test
+    void batchImportsUsersAndManagesDevicePolicies() throws Exception {
+        val suffix = UUID.randomUUID().toString();
+        val token = adminToken();
+        val enterpriseId = "ent_batch_" + suffix;
+        jdbcTemplate.update("INSERT INTO enterprises(id, name, code) VALUES (?, 'Batch Enterprise', ?)", enterpriseId, "batch_" + Math.abs(suffix.hashCode()));
+
+        val importJson = mockMvc.perform(post("/api/admin/users/batch-import")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content(String.format("{\"users\":[{\"enterpriseId\":\"%s\",\"phone\":\"181%s\",\"displayName\":\"Batch One\"},{\"enterpriseId\":\"%s\",\"phone\":\"182%s\",\"displayName\":\"Batch Two\"}]}\n",
+                                enterpriseId, Math.abs(suffix.hashCode()), enterpriseId, Math.abs((suffix + "b").hashCode()))))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        JsonNode importData = objectMapper.readTree(importJson).path("data");
+        assertThat(importData.path("created").asInt()).isEqualTo(2);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM users WHERE enterprise_id = ?", Integer.class, enterpriseId)).isEqualTo(2);
+
+        mockMvc.perform(patch("/api/admin/users/device-policies/maxOnlineDevices")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content("{\"value\":\"3\"}\n"))
+                .andExpect(status().isOk());
+
+        val policiesJson = mockMvc.perform(get("/api/admin/users/device-policies")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertThat(objectMapper.readTree(policiesJson).path("data").findValuesAsText("key")).contains("device.maxOnlineDevices");
+        assertThat(jdbcTemplate.queryForObject("SELECT config_value FROM system_configs WHERE config_key = 'device.maxOnlineDevices'", String.class)).isEqualTo("3");
+    }
+
+    @Test
+    void forceOfflineRequiresConfirmationAndAudits() throws Exception {
+        val suffix = UUID.randomUUID().toString();
+        val userId = "u_force_offline_" + suffix;
+        userService.ensureUser(userId, "Force Offline", "183" + Math.abs(suffix.hashCode()));
+        val token = adminToken();
+
+        mockMvc.perform(post("/api/admin/users/{userId}/force-offline", userId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content("{\"confirmText\":\"NOPE\"}\n"))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/admin/users/{userId}/force-offline", userId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content("{\"confirmText\":\"CONFIRM\"}\n"))
+                .andExpect(status().isOk());
+
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM audit_logs WHERE action = 'USER_FORCE_OFFLINE' AND target_id = ?", Integer.class, userId)).isEqualTo(1);
+    }
+
+    @Test
+    void managesWorkspaceAppLifecycleAndVisibility() throws Exception {
+        val suffix = UUID.randomUUID().toString();
+        val token = adminToken();
+        val enterpriseId = "ent_app_" + suffix;
+        val departmentId = "dep_app_" + suffix;
+        jdbcTemplate.update("INSERT INTO enterprises(id, name, code) VALUES (?, 'App Enterprise', ?)", enterpriseId, "app_" + Math.abs(suffix.hashCode()));
+        jdbcTemplate.update("INSERT INTO departments(id, enterprise_id, name, sort_order) VALUES (?, ?, 'Visible Dept', 1)", departmentId, enterpriseId);
+
+        val appJson = mockMvc.perform(post("/api/admin/workspace-apps")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content(String.format("{\"name\":\"CRM\",\"icon\":\"briefcase\",\"url\":\"/crm\",\"visibleDepartmentId\":\"%s\",\"sortOrder\":10,\"enabled\":true}\n", departmentId)))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        val appId = objectMapper.readTree(appJson).path("data").path("id").asText();
+
+        mockMvc.perform(patch("/api/admin/workspace-apps/{id}", appId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content(String.format("{\"name\":\"CRM Pro\",\"icon\":\"briefcase\",\"url\":\"/crm\",\"visibleDepartmentId\":\"%s\",\"sortOrder\":20,\"enabled\":false}\n", departmentId)))
+                .andExpect(status().isOk());
+        mockMvc.perform(patch("/api/admin/workspace-apps/reorder")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content(String.format("{\"items\":[{\"id\":\"%s\",\"sortOrder\":3}]}\n", appId)))
+                .andExpect(status().isOk());
+        assertThat(jdbcTemplate.queryForObject("SELECT sort_order FROM workspace_apps WHERE id = ?", Integer.class, appId)).isEqualTo(3);
+
+        mockMvc.perform(delete("/api/admin/workspace-apps/{id}", appId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content("{\"confirmText\":\"CONFIRM\"}\n"))
+                .andExpect(status().isOk());
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM workspace_apps WHERE id = ?", Integer.class, appId)).isEqualTo(0);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM audit_logs WHERE target_id = ? AND action IN ('WORKSPACE_APP_CREATE','WORKSPACE_APP_UPDATE','WORKSPACE_APP_REORDER','WORKSPACE_APP_DELETE')", Integer.class, appId)).isGreaterThanOrEqualTo(3);
     }
 }

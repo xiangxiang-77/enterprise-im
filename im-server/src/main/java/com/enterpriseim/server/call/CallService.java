@@ -159,7 +159,7 @@ public class CallService {
                 "FROM call_records\n" +
                 "WHERE id = ?\n", (rs, rowNum) -> mapCall(rs), callId);
         if (calls.isEmpty()) {
-            throw new ResponseStatusException(BAD_REQUEST, "call not found");
+            throw new ResponseStatusException(BAD_REQUEST, "通话未找到");
         }
         return calls.get(0);
     }
@@ -176,7 +176,7 @@ public class CallService {
                 "    ended_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE ended_at END\n" +
                 "WHERE id = ?\n", nextStatus, answeredAt, endedAt, callId);
         if (updated == 0) {
-            throw new ResponseStatusException(BAD_REQUEST, "call not found");
+            throw new ResponseStatusException(BAD_REQUEST, "通话未找到");
         }
         CallRecord record = get(callId);
         if ("answered".equals(nextStatus)) {
@@ -209,19 +209,19 @@ public class CallService {
             allowed = false;
         }
         if (!allowed) {
-            throw new ResponseStatusException(BAD_REQUEST, "invalid call transition: " + currentStatus + " -> " + nextStatus);
+            throw new ResponseStatusException(BAD_REQUEST, "无效的通话状态转换: " + currentStatus + " -> " + nextStatus);
         }
     }
 
     private void ensureActorAllowed(CallRecord current, String nextStatus, String actorId) {
         if ("answered".equals(nextStatus) || "rejected".equals(nextStatus)) {
             if (!actorId.equals(current.calleeId())) {
-                throw new ResponseStatusException(FORBIDDEN, "only callee can " + nextStatus);
+                throw new ResponseStatusException(FORBIDDEN, "仅被叫方可以" + nextStatus);
             }
             return;
         }
         if (!actorId.equals(current.callerId()) && !actorId.equals(current.calleeId())) {
-            throw new ResponseStatusException(FORBIDDEN, "only call participants can change call state");
+            throw new ResponseStatusException(FORBIDDEN, "仅通话参与者可以变更通话状态");
         }
     }
 
@@ -247,7 +247,7 @@ public class CallService {
     private String normalizeMediaType(String value) {
         val mediaType = value == null || value.trim().isEmpty() ? "audio" : value.toLowerCase();
         if (!Arrays.asList("audio", "video").contains(mediaType)) {
-            throw new ResponseStatusException(BAD_REQUEST, "mediaType must be audio or video");
+            throw new ResponseStatusException(BAD_REQUEST, "媒体类型必须为 audio 或 video");
         }
         return mediaType;
     }

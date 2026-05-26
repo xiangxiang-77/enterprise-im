@@ -24,7 +24,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.springframework.http.HttpStatus.BAD_REQUEST;
@@ -76,6 +78,31 @@ public class AdminOrganizationController {
                 "VALUES (?, ?, ?)\n", enterpriseId, name, code);
         auditTyped(admin.userId(), "ENTERPRISE_CREATE", "enterprise", enterpriseId, "code=" + code);
         return ApiResponse.ok(getEnterprise(enterpriseId));
+    }
+
+    @DeleteMapping("/enterprises/{enterpriseId}")
+    public ApiResponse<DepartmentMutationResponse> deleteEnterprise(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String enterpriseId,
+            @RequestBody DeleteDepartmentRequest request
+    ) {
+        val admin = authService.requireAdmin(authorization);
+        authService.requireRole(admin, "SUPER_ADMIN");
+        if (!"CONFIRM".equals(request.confirmText())) {
+            throw new ResponseStatusException(BAD_REQUEST, "确认文本必须为 CONFIRM");
+        }
+        ensureEnterprise(enterpriseId);
+        val userCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM users WHERE enterprise_id = ?", Integer.class, enterpriseId);
+        if (userCount != null && userCount > 0) {
+            throw new ResponseStatusException(BAD_REQUEST, "企业下还有用户，无法删除");
+        }
+        val deptCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM departments WHERE enterprise_id = ?", Integer.class, enterpriseId);
+        if (deptCount != null && deptCount > 0) {
+            throw new ResponseStatusException(BAD_REQUEST, "企业下还有部门，无法删除");
+        }
+        jdbcTemplate.update("DELETE FROM enterprises WHERE id = ?", enterpriseId);
+        auditTyped(admin.userId(), "ENTERPRISE_DELETE", "enterprise", enterpriseId, "deleted=true");
+        return ApiResponse.ok(new DepartmentMutationResponse(enterpriseId, "deleted"));
     }
 
     @GetMapping("/departments")
@@ -162,21 +189,284 @@ public class AdminOrganizationController {
         val admin = authService.requireAdmin(authorization);
         authService.requireRole(admin, "SUPER_ADMIN", "OPERATOR_ADMIN");
         if (!"CONFIRM".equals(request.confirmText())) {
-            throw new ResponseStatusException(BAD_REQUEST, "confirmText must be CONFIRM");
+            throw new ResponseStatusException(BAD_REQUEST, "确认文本必须为 CONFIRM");
         }
         ensureDepartment(departmentId);
         val memberCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM department_members WHERE department_id = ?\n", Integer.class, departmentId);
         if (memberCount != null && memberCount > 0) {
-            throw new ResponseStatusException(BAD_REQUEST, "department has members");
+            throw new ResponseStatusException(BAD_REQUEST, "部门内还有成员，无法删除");
         }
         val childCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM departments WHERE parent_id = ?\n", Integer.class, departmentId);
         if (childCount != null && childCount > 0) {
-            throw new ResponseStatusException(BAD_REQUEST, "department has child departments");
+            throw new ResponseStatusException(BAD_REQUEST, "部门下还有子部门，无法删除");
         }
 
         jdbcTemplate.update("DELETE FROM departments WHERE id = ?", departmentId);
         audit(admin.userId(), "DEPARTMENT_DELETE", departmentId, "deleted=true");
         return ApiResponse.ok(new DepartmentMutationResponse(departmentId, "deleted"));
+    }
+
+    // ── 66. Department Tree ──────────────────────────────────────
+
+    @GetMapping("/departments/tree")
+    public ApiResponse<List<DepartmentTreeNode>> departmentTree(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @RequestParam String enterpriseId
+    ) {
+        authService.requireAdmin(authorization);
+        ensureEnterprise(enterpriseId);
+
+        val allDepts = jdbcTemplate.query(
+                "SELECT id, name, parent_id FROM departments WHERE enterprise_id = ? ORDER BY sort_order ASC, name ASC",
+                (rs, rowNum) -> new DepartmentTreeNode(
+                        rs.getString("id"),
+                        rs.getString("name"),
+                        rs.getString("parent_id"),
+                        new ArrayList<>()
+                ),
+                enterpriseId
+        );
+
+        return ApiResponse.ok(buildDepartmentTree(allDepts, null));
+    }
+
+    private List<DepartmentTreeNode> buildDepartmentTree(List<DepartmentTreeNode> allNodes, String parentId) {
+        val result = new ArrayList<DepartmentTreeNode>();
+        for (val node : allNodes) {
+            if (parentId == null ? node.parentId() == null : parentId.equals(node.parentId())) {
+                val children = buildDepartmentTree(allNodes, node.id());
+                node.children().addAll(children);
+                result.add(node);
+            }
+        }
+        return result;
+    }
+
+    // ── 67. Department Member CRUD ───────────────────────────────
+
+    @GetMapping("/departments/{departmentId}/members")
+    public ApiResponse<List<MemberRow>> departmentMembers(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String departmentId
+    ) {
+        authService.requireAdmin(authorization);
+        ensureDepartment(departmentId);
+
+        val members = jdbcTemplate.query(
+                "SELECT dm.user_id, u.display_name, dm.position_name " +
+                "FROM department_members dm " +
+                "JOIN users u ON u.id = dm.user_id " +
+                "WHERE dm.department_id = ? " +
+                "ORDER BY u.display_name ASC",
+                (rs, rowNum) -> new MemberRow(
+                        rs.getString("user_id"),
+                        rs.getString("display_name"),
+                        rs.getString("position_name")
+                ),
+                departmentId
+        );
+        return ApiResponse.ok(members);
+    }
+
+    @PostMapping("/departments/{departmentId}/members")
+    public ApiResponse<Map<String, Object>> addDepartmentMembers(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String departmentId,
+            @RequestBody BatchMemberRequest request
+    ) {
+        val admin = authService.requireAdmin(authorization);
+        authService.requireRole(admin, "SUPER_ADMIN", "OPERATOR_ADMIN");
+        ensureDepartment(departmentId);
+
+        val userIds = request.userIds();
+        if (userIds == null || userIds.isEmpty()) {
+            throw new ResponseStatusException(BAD_REQUEST, "userIds 不能为空");
+        }
+
+        int added = 0;
+        for (val userId : userIds) {
+            if (userId == null || userId.trim().isEmpty()) continue;
+            ensureUser(userId.trim());
+            val existing = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM department_members WHERE department_id = ? AND user_id = ?",
+                    Integer.class, departmentId, userId.trim()
+            );
+            if (existing == null || existing == 0) {
+                jdbcTemplate.update(
+                        "INSERT INTO department_members(department_id, user_id) VALUES (?, ?)",
+                        departmentId, userId.trim()
+                );
+                added++;
+            }
+        }
+
+        audit(admin.userId(), "DEPARTMENT_MEMBERS_ADD", departmentId, "added=" + added);
+        val result = new HashMap<String, Object>();
+        result.put("added", added);
+        return ApiResponse.ok(result);
+    }
+
+    @DeleteMapping("/departments/{departmentId}/members")
+    public ApiResponse<Map<String, Object>> removeDepartmentMembers(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String departmentId,
+            @RequestBody BatchMemberRequest request
+    ) {
+        val admin = authService.requireAdmin(authorization);
+        authService.requireRole(admin, "SUPER_ADMIN", "OPERATOR_ADMIN");
+        ensureDepartment(departmentId);
+
+        val userIds = request.userIds();
+        if (userIds == null || userIds.isEmpty()) {
+            throw new ResponseStatusException(BAD_REQUEST, "userIds 不能为空");
+        }
+
+        int removed = 0;
+        for (val userId : userIds) {
+            if (userId == null || userId.trim().isEmpty()) continue;
+            val deleted = jdbcTemplate.update(
+                    "DELETE FROM department_members WHERE department_id = ? AND user_id = ?",
+                    departmentId, userId.trim()
+            );
+            removed += deleted;
+        }
+
+        audit(admin.userId(), "DEPARTMENT_MEMBERS_REMOVE", departmentId, "removed=" + removed);
+        val result = new HashMap<String, Object>();
+        result.put("removed", removed);
+        return ApiResponse.ok(result);
+    }
+
+    // ── 68. Department Permissions ───────────────────────────────
+
+    @GetMapping("/departments/{departmentId}/permissions")
+    public ApiResponse<DepartmentPermissions> getDepartmentPermissions(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String departmentId
+    ) {
+        authService.requireAdmin(authorization);
+        ensureDepartment(departmentId);
+
+        val rows = jdbcTemplate.query(
+                "SELECT can_create_group, can_invite_external, can_share_files, can_video_call, storage_quota_mb " +
+                "FROM department_permissions WHERE department_id = ?",
+                (rs, rowNum) -> new DepartmentPermissions(
+                        rs.getBoolean("can_create_group"),
+                        rs.getBoolean("can_invite_external"),
+                        rs.getBoolean("can_share_files"),
+                        rs.getBoolean("can_video_call"),
+                        rs.getInt("storage_quota_mb")
+                ),
+                departmentId
+        );
+
+        if (rows.isEmpty()) {
+            return ApiResponse.ok(new DepartmentPermissions(true, false, true, true, 1024));
+        }
+        return ApiResponse.ok(rows.get(0));
+    }
+
+    @PatchMapping("/departments/{departmentId}/permissions")
+    public ApiResponse<DepartmentPermissions> updateDepartmentPermissions(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String departmentId,
+            @RequestBody DepartmentPermissions request
+    ) {
+        val admin = authService.requireAdmin(authorization);
+        authService.requireRole(admin, "SUPER_ADMIN", "OPERATOR_ADMIN");
+        ensureDepartment(departmentId);
+
+        jdbcTemplate.update("DELETE FROM department_permissions WHERE department_id = ?", departmentId);
+        jdbcTemplate.update(
+                "INSERT INTO department_permissions(id, department_id, can_create_group, can_invite_external, can_share_files, can_video_call, storage_quota_mb) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "dperm_" + UUID.randomUUID(), departmentId,
+                request.canCreateGroup(),
+                request.canInviteExternal(),
+                request.canShareFiles(),
+                request.canVideoCall(),
+                request.storageQuotaMb()
+        );
+
+        audit(admin.userId(), "DEPARTMENT_PERMISSIONS_UPDATE", departmentId,
+                "canCreateGroup=" + request.canCreateGroup() + ",canInviteExternal=" + request.canInviteExternal());
+        return ApiResponse.ok(request);
+    }
+
+    // ── 69. Department Broadcast ─────────────────────────────────
+
+    @PostMapping("/departments/{departmentId}/broadcast")
+    public ApiResponse<BroadcastResponse> broadcastToDepartment(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable String departmentId,
+            @RequestBody BroadcastRequest request
+    ) {
+        val admin = authService.requireAdmin(authorization);
+        authService.requireRole(admin, "SUPER_ADMIN", "OPERATOR_ADMIN");
+        ensureDepartment(departmentId);
+
+        val content = required(request.content(), "content");
+
+        val members = jdbcTemplate.query(
+                "SELECT user_id FROM department_members WHERE department_id = ?",
+                (rs, rowNum) -> rs.getString("user_id"),
+                departmentId
+        );
+
+        if (members.isEmpty()) {
+            return ApiResponse.ok(new BroadcastResponse(0));
+        }
+
+        // Ensure system user exists for sending broadcast messages
+        val sysCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM users WHERE id = 'system'", Integer.class
+        );
+        if (sysCount == null || sysCount == 0) {
+            jdbcTemplate.update(
+                    "INSERT INTO users(id, display_name, phone, status) VALUES ('system', '系统消息', 'system', 'active')"
+            );
+        }
+
+        int sent = 0;
+        for (val userId : members) {
+            val conversationId = "conv_system_" + userId;
+
+            // Ensure conversation exists
+            val convCount = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM conversations WHERE id = ?", Integer.class, conversationId
+            );
+            if (convCount == null || convCount == 0) {
+                jdbcTemplate.update(
+                        "INSERT INTO conversations(id, type, target_id) VALUES (?, 'single', ?)",
+                        conversationId, userId
+                );
+            }
+
+            // Ensure both system and user are conversation members
+            for (val memberId : new String[]{"system", userId}) {
+                val memCount = jdbcTemplate.queryForObject(
+                        "SELECT COUNT(*) FROM conversation_members WHERE conversation_id = ? AND user_id = ?",
+                        Integer.class, conversationId, memberId
+                );
+                if (memCount == null || memCount == 0) {
+                    jdbcTemplate.update(
+                            "INSERT INTO conversation_members(conversation_id, user_id) VALUES (?, ?)",
+                            conversationId, memberId
+                    );
+                }
+            }
+
+            val messageId = "m_" + UUID.randomUUID();
+            jdbcTemplate.update(
+                    "INSERT INTO messages(id, conversation_id, sender_id, type, content, status) " +
+                    "VALUES (?, ?, 'system', 'system', ?, 'sent')",
+                    messageId, conversationId, content
+            );
+            sent++;
+        }
+
+        audit(admin.userId(), "DEPARTMENT_BROADCAST", departmentId, "sent=" + sent);
+        return ApiResponse.ok(new BroadcastResponse(sent));
     }
 
     @GetMapping("/roles")
@@ -247,7 +537,7 @@ public class AdminOrganizationController {
         val admin = authService.requireAdmin(authorization);
         authService.requireRole(admin, "SUPER_ADMIN");
         if (!"CONFIRM".equals(request.confirmText())) {
-            throw new ResponseStatusException(BAD_REQUEST, "confirmText must be CONFIRM");
+            throw new ResponseStatusException(BAD_REQUEST, "确认文本必须为 CONFIRM");
         }
         ensureAdminUser(adminUserId);
         jdbcTemplate.update("UPDATE admin_users\n" +
@@ -272,7 +562,7 @@ public class AdminOrganizationController {
                 rs.getInt("member_count")
         ), departmentId);
         if (rows.isEmpty()) {
-            throw new ResponseStatusException(BAD_REQUEST, "department not found");
+            throw new ResponseStatusException(BAD_REQUEST, "部门未找到");
         }
         return rows.get(0);
     }
@@ -290,7 +580,7 @@ public class AdminOrganizationController {
                 rs.getInt("department_count")
         ), enterpriseId);
         if (rows.isEmpty()) {
-            throw new ResponseStatusException(BAD_REQUEST, "enterprise not found");
+            throw new ResponseStatusException(BAD_REQUEST, "企业未找到");
         }
         return rows.get(0);
     }
@@ -298,41 +588,41 @@ public class AdminOrganizationController {
     private void ensureEnterprise(String enterpriseId) {
         val count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM enterprises WHERE id = ?", Integer.class, enterpriseId);
         if (count == null || count == 0) {
-            throw new ResponseStatusException(BAD_REQUEST, "enterprise not found");
+            throw new ResponseStatusException(BAD_REQUEST, "企业未找到");
         }
     }
 
     private void ensureUser(String userId) {
         val count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM users WHERE id = ?", Integer.class, userId);
         if (count == null || count == 0) {
-            throw new ResponseStatusException(BAD_REQUEST, "user not found");
+            throw new ResponseStatusException(BAD_REQUEST, "用户未找到");
         }
     }
 
     private void ensureRole(String roleId) {
         val count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM admin_roles WHERE id = ?", Integer.class, roleId);
         if (count == null || count == 0) {
-            throw new ResponseStatusException(BAD_REQUEST, "role not found");
+            throw new ResponseStatusException(BAD_REQUEST, "角色未找到");
         }
     }
 
     private void ensureAdminUser(String adminUserId) {
         val count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM admin_users WHERE id = ?", Integer.class, adminUserId);
         if (count == null || count == 0) {
-            throw new ResponseStatusException(BAD_REQUEST, "admin user not found");
+            throw new ResponseStatusException(BAD_REQUEST, "管理员账号未找到");
         }
     }
 
     private void ensureDepartment(String departmentId) {
         val count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM departments WHERE id = ?", Integer.class, departmentId);
         if (count == null || count == 0) {
-            throw new ResponseStatusException(BAD_REQUEST, "department not found");
+            throw new ResponseStatusException(BAD_REQUEST, "部门未找到");
         }
     }
 
     private String required(String value, String field) {
         if (value == null || value.trim().isEmpty()) {
-            throw new ResponseStatusException(BAD_REQUEST, field + " required");
+            throw new ResponseStatusException(BAD_REQUEST, field + " 不能为空");
         }
         return value.trim();
     }
@@ -364,7 +654,7 @@ public class AdminOrganizationController {
                 rs.getBoolean("enabled")
         ), adminUserId);
         if (rows.isEmpty()) {
-            throw new ResponseStatusException(BAD_REQUEST, "admin user not found");
+            throw new ResponseStatusException(BAD_REQUEST, "管理员账号未找到");
         }
         return rows.get(0);
     }
@@ -492,5 +782,100 @@ public static class AdminUserRequest {
 public static class AdminUserEnabledRequest {
     private boolean enabled;
     private String confirmText;
+}
+
+    // ── Department Tree Node ─────────────────────────────────────
+
+    @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Accessors(fluent = true)
+public static class DepartmentTreeNode {
+    private String id;
+    private String name;
+    private String parentId;
+    private List<DepartmentTreeNode> children;
+}
+
+    // ── Department Member Row ────────────────────────────────────
+
+    @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Accessors(fluent = true)
+public static class MemberRow {
+    private String id;
+    private String name;
+    private String role;
+}
+
+    // ── Batch Member Request (used by add / remove) ──────────────
+
+    @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Accessors(fluent = true)
+public static class BatchMemberRequest {
+    private List<String> userIds;
+}
+
+    /*
+     * SQL migration for department_permissions table (V18__department_permissions.sql):
+     *
+     * CREATE TABLE IF NOT EXISTS department_permissions (
+     *     id VARCHAR(64) PRIMARY KEY,
+     *     department_id VARCHAR(64) NOT NULL,
+     *     can_create_group BOOLEAN NOT NULL DEFAULT TRUE,
+     *     can_invite_external BOOLEAN NOT NULL DEFAULT FALSE,
+     *     can_share_files BOOLEAN NOT NULL DEFAULT TRUE,
+     *     can_video_call BOOLEAN NOT NULL DEFAULT TRUE,
+     *     storage_quota_mb INT NOT NULL DEFAULT 1024,
+     *     CONSTRAINT fk_department_permissions_department FOREIGN KEY (department_id) REFERENCES departments(id)
+     * );
+     * CREATE UNIQUE INDEX IF NOT EXISTS uk_department_permissions_department ON department_permissions(department_id);
+     */
+
+    // ── Department Permissions ───────────────────────────────────
+
+    @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Accessors(fluent = true)
+public static class DepartmentPermissions {
+    private boolean canCreateGroup;
+    private boolean canInviteExternal;
+    private boolean canShareFiles;
+    private boolean canVideoCall;
+    private int storageQuotaMb;
+}
+
+    // ── Broadcast ────────────────────────────────────────────────
+
+    @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Accessors(fluent = true)
+public static class BroadcastRequest {
+    private String content;
+}
+
+    @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Accessors(fluent = true)
+public static class BroadcastResponse {
+    private int sent;
 }
 }

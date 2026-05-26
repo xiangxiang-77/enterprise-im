@@ -35,11 +35,11 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: process.env.VITE_IM_API_PROXY_TARGET ?? "http://127.0.0.1:18080",
+        target: process.env.VITE_IM_API_PROXY_TARGET ?? "http://127.0.0.1:8080",
         changeOrigin: true,
       },
       "/ws": {
-        target: process.env.VITE_IM_WS_PROXY_TARGET ?? "ws://127.0.0.1:18080",
+        target: process.env.VITE_IM_WS_PROXY_TARGET ?? "ws://127.0.0.1:8080",
         ws: true,
       },
     },

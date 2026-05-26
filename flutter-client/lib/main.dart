@@ -1,12 +1,22 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 
-import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:path/path.dart' as path;
-import 'package:sqflite/sqflite.dart';
+
+import 'models/session.dart';
+import 'models/user.dart';
+import 'screens/chat_screen.dart';
+import 'screens/contact_profile_screen.dart';
+import 'screens/contacts_screen.dart';
+import 'screens/file_manager_screen.dart';
+import 'screens/friend_requests_screen.dart';
+import 'screens/login_screen.dart';
+import 'screens/organization_screen.dart';
+import 'screens/search_screen.dart';
+import 'screens/session_list_screen.dart';
+import 'screens/settings_screen.dart';
+import 'services/api_service.dart';
+import 'services/socket_service.dart';
+import 'services/storage_service.dart';
 
 void main() {
   runApp(const EnterpriseImApp());
@@ -14,6 +24,133 @@ void main() {
 
 class EnterpriseImApp extends StatelessWidget {
   const EnterpriseImApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const AppRoot();
+  }
+}
+
+enum _AppPhase { loading, login, onboarding, main }
+
+class AppRoot extends StatefulWidget {
+  const AppRoot({super.key});
+
+  @override
+  State<AppRoot> createState() => _AppRootState();
+}
+
+class _AppRootState extends State<AppRoot> {
+  final storageService = StorageService();
+  late final ApiService apiService;
+  final socketService = SocketService();
+
+  _AppPhase _phase = _AppPhase.loading;
+  AppUser? _currentUser;
+  bool _darkMode = false;
+
+  @override
+  void initState() {
+    super.initState();
+    apiService = ApiService(baseUrl: '');
+    socketService.onStateChanged = (_, __) {
+      if (mounted) setState(() {});
+    };
+    _initApp();
+  }
+
+  Future<void> _initApp() async {
+    await storageService.init();
+
+    _darkMode = storageService.getDarkMode();
+
+    final token = storageService.getToken();
+    final userId = storageService.getUserId();
+    final userName = storageService.getUserName();
+    final host = storageService.getHost();
+    final httpPort = storageService.getHttpPort();
+    final tcpPort = storageService.getTcpPort();
+
+    if (token != null && token.isNotEmpty && userId != null && userId.isNotEmpty) {
+      // Restore session
+      apiService.token = token;
+      apiService.currentUserId = userId;
+      if (host != null && httpPort != null) {
+        apiService.updateBaseUrl(host, httpPort);
+      }
+
+      _currentUser = AppUser(
+        id: userId,
+        name: userName ?? userId,
+      );
+
+      // Connect TCP socket
+      if (host != null && tcpPort != null) {
+        final port = int.tryParse(tcpPort);
+        if (port != null) {
+          unawaited(socketService.connect(host, port, userId, token));
+        }
+      }
+
+      final onboardingComplete = storageService.prefs?.getBool('onboarding_complete') ?? false;
+      if (!mounted) return;
+      setState(() {
+        _phase = onboardingComplete ? _AppPhase.main : _AppPhase.onboarding;
+      });
+    } else {
+      if (!mounted) return;
+      setState(() => _phase = _AppPhase.login);
+    }
+  }
+
+  @override
+  void dispose() {
+    socketService.disconnect();
+    storageService.close();
+    super.dispose();
+  }
+
+  void _onLoginSuccess(AppUser user, String token) {
+    _currentUser = user;
+    apiService.token = token;
+    apiService.currentUserId = user.id;
+
+    // Connect TCP socket
+    final host = storageService.getHost();
+    final tcpPort = storageService.getTcpPort();
+    if (host != null && tcpPort != null) {
+      final port = int.tryParse(tcpPort);
+      if (port != null) {
+        unawaited(socketService.connect(host, port, user.id, token));
+      }
+    }
+
+    final onboardingComplete = storageService.prefs?.getBool('onboarding_complete') ?? false;
+    setState(() {
+      _phase = onboardingComplete ? _AppPhase.main : _AppPhase.onboarding;
+    });
+  }
+
+  void _onLogout() {
+    socketService.disconnect();
+    storageService.clearAuth();
+    apiService.token = null;
+    apiService.currentUserId = null;
+    _currentUser = null;
+    setState(() => _phase = _AppPhase.login);
+  }
+
+  void _onDarkModeChanged() {
+    final newVal = storageService.getDarkMode();
+    if (newVal != _darkMode) {
+      setState(() => _darkMode = newVal);
+    }
+  }
+
+  void _onOnboardingComplete() {
+    storageService.prefs?.setBool('onboarding_complete', true);
+    setState(() => _phase = _AppPhase.main);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -26,1231 +163,541 @@ class EnterpriseImApp extends StatelessWidget {
         scaffoldBackgroundColor: const Color(0xFFF6F8FB),
         useMaterial3: true,
       ),
-      home: const MobileClientPage(),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: seed,
+          brightness: Brightness.dark,
+        ),
+        scaffoldBackgroundColor: const Color(0xFF1A1A2E),
+        useMaterial3: true,
+      ),
+      themeMode: _darkMode ? ThemeMode.dark : ThemeMode.light,
+      home: _buildHome(),
     );
+  }
+
+  Widget _buildHome() {
+    switch (_phase) {
+      case _AppPhase.loading:
+        return const _LoadingScreen();
+      case _AppPhase.login:
+        return LoginScreen(
+          apiService: apiService,
+          storageService: storageService,
+          onLoginSuccess: _onLoginSuccess,
+        );
+      case _AppPhase.onboarding:
+        return _OnboardingPage(onComplete: _onOnboardingComplete);
+      case _AppPhase.main:
+        return _MainScaffold(
+          apiService: apiService,
+          socketService: socketService,
+          storageService: storageService,
+          currentUser: _currentUser ?? AppUser(id: '', name: ''),
+          onLogout: _onLogout,
+          onDarkModeChanged: _onDarkModeChanged,
+        );
+    }
   }
 }
 
-class ChatEntry {
-  ChatEntry({
-    required this.sender,
-    required this.content,
-    required this.direction,
-    required this.createdAt,
+// ---------------------------------------------------------------------------
+// _MainScaffold — bottom navigation scaffold
+// ---------------------------------------------------------------------------
+
+class _MainScaffold extends StatefulWidget {
+  const _MainScaffold({
+    required this.apiService,
+    required this.socketService,
+    required this.storageService,
+    required this.currentUser,
+    required this.onLogout,
+    required this.onDarkModeChanged,
   });
 
-  final String sender;
-  final String content;
-  final String direction;
-  final DateTime createdAt;
-
-  bool get mine => direction == 'out';
-}
-
-class MobileClientPage extends StatefulWidget {
-  const MobileClientPage({super.key});
+  final ApiService apiService;
+  final SocketService socketService;
+  final StorageService storageService;
+  final AppUser currentUser;
+  final VoidCallback onLogout;
+  final VoidCallback onDarkModeChanged;
 
   @override
-  State<MobileClientPage> createState() => _MobileClientPageState();
+  State<_MainScaffold> createState() => _MainScaffoldState();
 }
 
-class _MobileClientPageState extends State<MobileClientPage> {
-  static const sipChannel = MethodChannel('enterprise_im/sip');
-
-  final hostController = TextEditingController(text: '10.200.71.31');
-  final httpPortController = TextEditingController(text: '18080');
-  final tcpPortController = TextEditingController(text: '19090');
-  final userIdController = TextEditingController(text: 'u_flutter');
-  final tokenController = TextEditingController(text: 'demo-token-u_flutter');
-  final peerIdController = TextEditingController(text: 'u_qt');
-  final conversationIdController = TextEditingController(text: 'c_qt_flutter');
-  final messageController = TextEditingController();
-
-  final logs = <String>[];
-  final messages = <ChatEntry>[
-    ChatEntry(
-      sender: '系统',
-      content: '企业 IM 手机端 v13 已就绪：PJSIP 稳定通话版 2026-05-21',
-      direction: 'system',
-      createdAt: DateTime.now(),
-    ),
-  ];
-
-  Database? localDb;
-  Socket? socket;
-  StreamSubscription<List<int>>? subscription;
-  String pending = '';
-  bool connected = false;
-  bool authenticated = false;
-  bool callLoading = false;
-  Map<String, Object?>? activeCall;
-  Map<String, Object?>? readiness;
-  Map<String, Object?>? mediaConfig;
-  List<Map<String, Object?>> calls = [];
-  String sipStatus = 'idle';
-  String? nativeCallId;
-  String? nativeStartingCallId;
-  Future<void>? nativeStartFuture;
-  CameraController? cameraController;
-  Future<void>? cameraInitFuture;
-  String cameraStatus = 'idle';
-
-  String get baseUrl => 'http://${hostController.text.trim()}:${httpPortController.text.trim()}';
-  String get activeStatus => activeCall?['status']?.toString() ?? 'none';
-  String get selfId => userIdController.text.trim();
-  String get activeCallerId => activeCall?['callerId']?.toString() ?? '';
-  String get activeCalleeId => activeCall?['calleeId']?.toString() ?? '';
-  bool get activeCallIsMine => activeCallerId == selfId;
-  bool get activeCallIsForMe => activeCalleeId == selfId;
-  bool get incomingRinging => activeStatus == 'ringing' && activeCallIsForMe && !activeCallIsMine;
-  bool get outgoingRinging => activeStatus == 'ringing' && activeCallIsMine;
-  bool get activeAnswered => activeStatus == 'answered';
-  bool get activeCallVisible => activeStatus == 'ringing' || activeStatus == 'answered';
-  bool get activeVideoCall => activeCall?['mediaType']?.toString() == 'video';
-  bool get canHangupCall => activeStatus == 'ringing' || activeStatus == 'answered';
+class _MainScaffoldState extends State<_MainScaffold> {
+  int _currentTab = 0;
+  int _totalUnread = 0;
+  int _pendingFriendRequests = 0;
+  Timer? _unreadTimer;
 
   @override
   void initState() {
     super.initState();
-    sipChannel.setMethodCallHandler(handleSipChannelCall);
-    unawaited(initLocalStore());
-    unawaited(loadCallReadiness());
-    unawaited(uploadNativeDiagnostics('app_start'));
+    _loadUnreadCount();
+    _unreadTimer = Timer.periodic(const Duration(seconds: 15), (_) => _loadUnreadCount());
   }
 
   @override
   void dispose() {
-    sipChannel.setMethodCallHandler(null);
-    subscription?.cancel();
-    socket?.destroy();
-    cameraController?.dispose();
-    localDb?.close();
-    hostController.dispose();
-    httpPortController.dispose();
-    tcpPortController.dispose();
-    userIdController.dispose();
-    tokenController.dispose();
-    peerIdController.dispose();
-    conversationIdController.dispose();
-    messageController.dispose();
+    _unreadTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> handleSipChannelCall(MethodCall call) async {
-    if (call.method != 'sipEvent') return;
-    final args = call.arguments;
-    final event = args is Map ? Map<Object?, Object?>.from(args) : <Object?, Object?>{};
-    final type = event['type']?.toString() ?? 'event';
-    final message = event['message']?.toString() ?? '';
-    if (!mounted) return;
-    setState(() {
-      if (type == 'error') {
-        sipStatus = message.isEmpty ? 'error' : 'error: ${shortSipMessage(message)}';
-      } else if (type == 'media' || type == 'video' || type == 'state' || type == 'registration' || type == 'call') {
-        sipStatus = message.isEmpty ? type : shortSipMessage(message);
-      }
-      addLog('SIP EVENT $type $message');
-    });
-  }
-
-  String shortSipMessage(String message) {
-    final compact = message.replaceAll(RegExp(r'\s+'), ' ').trim();
-    if (compact.length <= 80) return compact;
-    return '${compact.substring(0, 77)}...';
-  }
-
-  Future<void> initLocalStore() async {
-    final dbPath = path.join(await getDatabasesPath(), 'enterprise_im_mobile.db');
-    final db = await openDatabase(
-      dbPath,
-      version: 1,
-      onCreate: (database, version) async {
-        await database.execute(
-          'CREATE TABLE local_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, line TEXT NOT NULL, created_at TEXT NOT NULL)',
-        );
-        await database.execute(
-          'CREATE TABLE local_messages(id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT, sender TEXT, content TEXT NOT NULL, direction TEXT NOT NULL, created_at TEXT NOT NULL)',
-        );
-        await database.execute(
-          'CREATE TABLE local_calls(id INTEGER PRIMARY KEY AUTOINCREMENT, call_id TEXT NOT NULL, media_type TEXT, status TEXT, created_at TEXT NOT NULL)',
-        );
-      },
-    );
-    localDb = db;
-    await loadLocalMessages();
-    if (mounted) {
-      setState(() => addLog('SQLITE READY $dbPath'));
-    }
-  }
-
-  Future<void> loadLocalMessages() async {
-    final db = localDb;
-    if (db == null || !db.isOpen) return;
-    final rows = await db.query(
-      'local_messages',
-      where: 'conversation_id = ?',
-      whereArgs: [conversationIdController.text.trim()],
-      orderBy: 'id DESC',
-      limit: 30,
-    );
-    final loaded = rows.reversed.map((row) {
-      return ChatEntry(
-        sender: row['sender']?.toString() ?? '',
-        content: row['content']?.toString() ?? '',
-        direction: row['direction']?.toString() ?? 'in',
-        createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ?? DateTime.now(),
-      );
-    }).toList();
-    if (mounted && loaded.isNotEmpty) {
-      setState(() {
-        messages
-          ..clear()
-          ..addAll(loaded);
-      });
-    }
-  }
-
-  Future<void> connectSocket() async {
-    if (connected) {
-      await subscription?.cancel();
-      socket?.destroy();
-      setState(() {
-        connected = false;
-        authenticated = false;
-        addLog('TCP DISCONNECTED');
-      });
-      return;
-    }
-
+  Future<void> _loadUnreadCount() async {
     try {
-      final port = int.parse(tcpPortController.text.trim());
-      final nextSocket = await Socket.connect(hostController.text.trim(), port, timeout: const Duration(seconds: 5));
-      subscription = nextSocket.listen(onData, onError: (error) {
-        setState(() => addLog('TCP ERROR $error'));
-      }, onDone: () {
-        setState(() {
-          connected = false;
-          authenticated = false;
-          addLog('TCP DISCONNECTED');
-        });
-      });
-      setState(() {
-        socket = nextSocket;
-        connected = true;
-        authenticated = false;
-        addLog('TCP CONNECTED ${hostController.text}:$port');
-      });
-      sendAuth();
-    } catch (error) {
-      setState(() => addLog('TCP ERROR $error'));
-    }
-  }
-
-  void onData(List<int> bytes) {
-    pending += utf8.decode(bytes);
-    var newline = pending.indexOf('\n');
-    while (newline >= 0) {
-      final line = pending.substring(0, newline).trim();
-      pending = pending.substring(newline + 1);
-      if (line.isNotEmpty) {
-        handleSocketLine(line);
-      }
-      newline = pending.indexOf('\n');
-    }
-  }
-
-  void handleSocketLine(String line) {
-    try {
-      final decoded = jsonDecode(line);
-      if (decoded is Map) {
-        final frame = Map<String, Object?>.from(decoded);
-        final type = frame['type']?.toString();
-        final payload = frame['payload'];
-        if (type == 'AUTH_OK') {
-          setState(() {
-            authenticated = true;
-            addLog('TCP AUTH OK ${payload ?? ''}');
-          });
-          return;
-        }
-        if (type == 'AUTH_FAILED') {
-          setState(() {
-            authenticated = false;
-            addLog('TCP AUTH FAILED ${payload ?? ''}');
-          });
-          return;
-        }
-        if ((type == 'CALL_INVITE' || type == 'CALL_UPDATE') && payload is Map) {
-          final call = Map<String, Object?>.from(payload);
-          unawaited(saveLocalCall(call));
-          setState(() {
-            activeCall = call;
-            addLog('TCP $type active=${call['id']} status=${call['status']}');
-          });
-          syncCameraPreviewForCall(call);
-          if (call['status']?.toString() == 'ringing' &&
-              call['calleeId']?.toString() == userIdController.text.trim() &&
-              call['mediaStatus'] == 'media_ready') {
-            unawaited(startNativeSipForCall(call));
+      final data = await widget.apiService.getConversations();
+      final items = data['items'] ?? data['conversations'] ?? data['data'];
+      if (items is List) {
+        int total = 0;
+        for (final item in items) {
+          if (item is Map) {
+            total += Session.fromJson(Map<String, Object?>.from(item)).unreadCount;
           }
-          if (call['status']?.toString() == 'answered' && call['mediaStatus'] == 'media_ready') {
-            unawaited(startNativeSipForCall(call));
-          }
-          if (call['status']?.toString() == 'rejected' || call['status']?.toString() == 'ended') {
-            unawaited(stopNativeSip());
-            unawaited(stopCameraPreview());
-          }
-          return;
         }
-        if (type == 'TEXT_DELIVER' && payload is Map) {
-          final content = payload['content']?.toString() ?? '';
-          final sender = frame['from']?.toString() ?? peerIdController.text.trim();
-          unawaited(saveLocalMessage(
-            conversationId: frame['conversationId']?.toString(),
-            sender: sender,
-            content: content,
-            direction: 'in',
-          ));
-          setState(() {
-            messages.add(ChatEntry(sender: sender, content: content, direction: 'in', createdAt: DateTime.now()));
-          });
-        }
+        if (mounted) setState(() => _totalUnread = total);
       }
     } catch (_) {
-      // Keep raw logging for malformed frames.
+      // Silently ignore errors when loading unread badge.
     }
-    setState(() => addLog('TCP IN $line'));
   }
 
-  void sendAuth() {
-    sendFrame('AUTH', payload: {'token': tokenController.text.trim()});
+  Future<void> _loadFriendRequestCount() async {
+    try {
+      final data = await widget.apiService.getFriendRequests();
+      final items = data['items'];
+      if (items is List && mounted) {
+        setState(() => _pendingFriendRequests = items.length);
+      }
+    } catch (_) {
+      // Silently ignore errors.
+    }
   }
 
-  void sendPing() {
-    sendFrame('PING');
+  void _onTabChanged(int index) {
+    setState(() => _currentTab = index);
+    if (index == 1) {
+      _loadFriendRequestCount();
+    }
+    widget.onDarkModeChanged();
   }
 
-  void sendText() {
-    final content = messageController.text.trim();
-    if (content.isEmpty) return;
-    sendFrame(
-      'TEXT',
-      to: peerIdController.text.trim(),
-      conversationId: conversationIdController.text.trim(),
-      payload: {'content': content},
+  // --- Full-screen push helpers ---
+
+  void _openChat(Session session) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(
+          session: session,
+          apiService: widget.apiService,
+          socketService: widget.socketService,
+          storageService: widget.storageService,
+          currentUser: widget.currentUser,
+          onBack: () => Navigator.of(context).pop(),
+        ),
+      ),
     );
-    messageController.clear();
-    unawaited(saveLocalMessage(
-      conversationId: conversationIdController.text.trim(),
-      sender: userIdController.text.trim(),
-      content: content,
-      direction: 'out',
-    ));
-    setState(() {
-      messages.add(ChatEntry(
-        sender: userIdController.text.trim(),
-        content: content,
-        direction: 'out',
-        createdAt: DateTime.now(),
-      ));
-    });
   }
 
-  void sendFrame(String type, {String? to, String? conversationId, Map<String, Object?> payload = const {}}) {
-    final currentSocket = socket;
-    if (currentSocket == null || !connected) {
-      setState(() => addLog('TCP ERROR socket is not connected'));
-      return;
-    }
-
-    final frame = <String, Object?>{
-      'version': '1',
-      'type': type,
-      'requestId': '${DateTime.now().microsecondsSinceEpoch}',
-      'from': userIdController.text.trim(),
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
-      'payload': payload,
-    };
-    if (to != null && to.isNotEmpty) {
-      frame['to'] = to;
-    }
-    if (conversationId != null && conversationId.isNotEmpty) {
-      frame['conversationId'] = conversationId;
-    }
-
-    final line = jsonEncode(frame);
-    currentSocket.write('$line\n');
-    setState(() => addLog('TCP OUT $line'));
-  }
-
-  Future<void> loadCallReadiness() async {
-    await runCallAction(() async {
-      final data = await getJson('/api/calls/readiness');
-      readiness = data;
-      addLog('CALL READINESS ${jsonEncode(data)}');
-    }, quiet: true);
-  }
-
-  Future<void> startCall(String mediaType) async {
-    await runCallAction(() async {
-      activeCall = null;
-      final data = await postJson('/api/calls', {
-        'callerId': userIdController.text.trim(),
-        'calleeId': peerIdController.text.trim(),
-        'conversationId': conversationIdController.text.trim(),
-        'mediaType': mediaType,
-      });
-      activeCall = data;
-      await saveLocalCall(data);
-      addLog('CALL START ${jsonEncode(data)}');
-      syncCameraPreviewForCall(data);
-      await refreshCalls();
-    });
-  }
-
-  Future<void> answerCall() async {
-    if (!incomingRinging) {
-      setState(() => addLog('CALL ANSWER BLOCKED not incoming ringing'));
-      return;
-    }
-    if (activeCall?['mediaStatus'] == 'media_ready') {
-      await startNativeSipForCall(activeCall!);
-    }
-    await transitionCall('answer');
-  }
-
-  Future<void> rejectCall() async {
-    await transitionCall('reject');
-  }
-
-  Future<void> hangupCall() async {
-    await transitionCall('hangup');
-  }
-
-  Future<void> transitionCall(String action) async {
-    final callId = activeCall?['id']?.toString();
-    if (callId == null || callId.isEmpty) {
-      setState(() => addLog('CALL ERROR no active call'));
-      return;
-    }
-    if (action == 'reject' || action == 'hangup') {
-      await stopNativeSip();
-      await stopCameraPreview();
-    }
-    await runCallAction(() async {
-      final data = await postJson('/api/calls/$callId/$action', {'actorId': userIdController.text.trim()});
-      activeCall = data;
-      await saveLocalCall(data);
-      addLog('CALL ${action.toUpperCase()} ${jsonEncode(data)}');
-      syncCameraPreviewForCall(data);
-      if (action == 'answer' && data['mediaStatus'] == 'media_ready' && nativeCallId != callId) {
-        await startNativeSipForCall(data);
-      }
-      if (action == 'reject' || action == 'hangup') {
-        await stopNativeSip();
-        await stopCameraPreview();
-      }
-      await refreshCalls();
-    });
-  }
-
-  Future<void> startNativeSipForCall(Map<String, Object?> call) async {
-    final callId = call['id']?.toString() ?? '';
-    if (callId.isNotEmpty && nativeCallId == callId) {
-      addLog('SIP already started for $callId');
-      return;
-    }
-    if (callId.isNotEmpty && nativeStartingCallId == callId && nativeStartFuture != null) {
-      addLog('SIP start already running for $callId');
-      await nativeStartFuture;
-      return;
-    }
-    nativeStartingCallId = callId;
-    final startFuture = _startNativeSipForCall(call);
-    nativeStartFuture = startFuture;
-    try {
-      await startFuture;
-    } finally {
-      if (nativeStartingCallId == callId) {
-        nativeStartingCallId = null;
-        nativeStartFuture = null;
-      }
-    }
-  }
-
-  Future<void> _startNativeSipForCall(Map<String, Object?> call) async {
-    final callId = call['id']?.toString() ?? '';
-    final peerId = peerIdForCall(call);
-    final outbound = call['callerId']?.toString() == userIdController.text.trim();
-    final config = await getJson(
-      '/api/calls/media-config?userId=${Uri.encodeQueryComponent(userIdController.text.trim())}&calleeId=${Uri.encodeQueryComponent(peerId)}&platform=android',
+  void _openSearch() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SearchScreen(
+          apiService: widget.apiService,
+          currentUserId: widget.currentUser.id,
+          onBack: () => Navigator.of(context).pop(),
+          onStartChat: (session) {
+            Navigator.of(context).pop();
+            _openChat(session);
+          },
+        ),
+      ),
     );
-    mediaConfig = config;
-    try {
-      final result = await sipChannel.invokeMethod<Map<Object?, Object?>>('start', {
-        'callId': callId,
-        'mediaType': call['mediaType']?.toString() ?? 'audio',
-        'outbound': outbound,
-        'sipDomain': config['sipDomain']?.toString() ?? '',
-        'sipRegistrar': config['sipRegistrar']?.toString() ?? '',
-        'sipRealm': config['sipRealm']?.toString() ?? '',
-        'sipUsername': config['sipUsername']?.toString() ?? '',
-        'sipPassword': config['sipPassword']?.toString() ?? '',
-        'selfSipUri': config['selfSipUri']?.toString() ?? '',
-        'calleeSipUri': config['calleeSipUri']?.toString() ?? '',
-        'turnUrl': config['turnUrl']?.toString() ?? '',
-        'turnUsername': config['turnUsername']?.toString() ?? '',
-        'turnPassword': config['turnPassword']?.toString() ?? '',
-      });
-      if (!mounted) return;
-      setState(() {
-        sipStatus = result?['status']?.toString() ?? 'unknown';
-        nativeCallId = callId;
-        addLog('SIP START $sipStatus ${jsonEncode(result)}');
-      });
-    } on PlatformException catch (error) {
-      final message = [error.code, error.message]
-          .where((part) => part != null && part.toString().isNotEmpty)
-          .join(': ');
-      if (!mounted) return;
-      setState(() {
-        sipStatus = 'error: ${shortSipMessage(message)}';
-        addLog('SIP ERROR ${error.code}: ${error.message}');
-      });
-      unawaited(uploadNativeDiagnostics('sip_error'));
-    }
   }
 
-  Future<void> stopNativeSip() async {
-    if (nativeStartFuture != null) {
-      await nativeStartFuture;
-    }
-    try {
-      final result = await sipChannel.invokeMethod<Map<Object?, Object?>>('stop');
-      if (!mounted) return;
-      setState(() {
-        sipStatus = result?['status']?.toString() ?? 'stopped';
-        nativeCallId = null;
-        nativeStartingCallId = null;
-        nativeStartFuture = null;
-        addLog('SIP STOP $sipStatus');
-      });
-    } on PlatformException catch (error) {
-      if (!mounted) return;
-      setState(() {
-        sipStatus = 'error: ${shortSipMessage('${error.code}: ${error.message ?? ''}')}';
-        addLog('SIP STOP ERROR ${error.code}: ${error.message}');
-      });
-    }
+  void _openFileManager() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => FileManagerScreen(
+          apiService: widget.apiService,
+          currentUserId: widget.currentUser.id,
+          onBack: () => Navigator.of(context).pop(),
+        ),
+      ),
+    );
   }
 
-  Future<String> loadNativeDiagnostics() async {
-    try {
-      final result = await sipChannel.invokeMethod<String>('diagnostics');
-      return result ?? 'native diagnostics empty';
-    } on PlatformException catch (error) {
-      return 'native diagnostics error ${error.code}: ${error.message}';
-    }
+  void _openOrganization() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => OrganizationScreen(
+          apiService: widget.apiService,
+          onBack: () => Navigator.of(context).pop(),
+          onStartChat: (session) {
+            Navigator.of(context).pop();
+            _openChat(session);
+          },
+        ),
+      ),
+    );
   }
 
-  Future<void> uploadNativeDiagnostics(String event) async {
-    try {
-      final diagnostics = await loadNativeDiagnostics();
-      await postJson('/api/debug/mobile/logs', {
-        'userId': userIdController.text.trim(),
-        'event': event,
-        'text': diagnostics,
-      });
-      if (mounted) {
-        setState(() => addLog('NATIVE DIAG UPLOADED $event'));
-      }
-    } catch (error) {
-      if (mounted) {
-        setState(() => addLog('NATIVE DIAG UPLOAD FAILED $error'));
-      }
-    }
+  void _openFriendRequests() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => FriendRequestsScreen(
+          apiService: widget.apiService,
+          onBack: () => Navigator.of(context).pop(),
+        ),
+      ),
+    );
   }
 
-  void syncCameraPreviewForCall(Map<String, Object?> call) {
-    final status = call['status']?.toString() ?? '';
-    final isVideo = call['mediaType']?.toString() == 'video';
-    if (isVideo && (status == 'ringing' || status == 'answered')) {
-      unawaited(startCameraPreview());
-    } else {
-      unawaited(stopCameraPreview());
-    }
+  void _openContactProfile(String userId) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ContactProfileScreen(
+          apiService: widget.apiService,
+          currentUserId: widget.currentUser.id,
+          userId: userId,
+          onBack: () => Navigator.of(context).pop(),
+          onStartChat: (session) {
+            Navigator.of(context).pop();
+            _openChat(session);
+          },
+        ),
+      ),
+    );
   }
 
-  Future<void> startCameraPreview() async {
-    if (cameraController?.value.isInitialized == true) {
-      return;
-    }
-    try {
-      setState(() => cameraStatus = 'starting');
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) {
-        setState(() => cameraStatus = 'no_camera');
-        addLog('CAMERA ERROR no camera');
-        return;
-      }
-      final frontCamera = cameras.firstWhere(
-        (camera) => camera.lensDirection == CameraLensDirection.front,
-        orElse: () => cameras.first,
-      );
-      final controller = CameraController(
-        frontCamera,
-        ResolutionPreset.medium,
-        enableAudio: false,
-      );
-      cameraController = controller;
-      cameraInitFuture = controller.initialize();
-      await cameraInitFuture;
-      if (mounted) {
-        setState(() => cameraStatus = 'ready');
-      }
-      addLog('CAMERA READY ${frontCamera.name}');
-    } catch (error) {
-      setState(() => cameraStatus = 'error');
-      addLog('CAMERA ERROR $error');
-    }
-  }
-
-  Future<void> stopCameraPreview() async {
-    final controller = cameraController;
-    cameraController = null;
-    cameraInitFuture = null;
-    if (mounted && cameraStatus != 'idle') {
-      setState(() => cameraStatus = 'idle');
-    }
-    await controller?.dispose();
-  }
-
-  String peerIdForCall(Map<String, Object?> call) {
-    final self = userIdController.text.trim();
-    final caller = call['callerId']?.toString() ?? peerIdController.text.trim();
-    final callee = call['calleeId']?.toString() ?? peerIdController.text.trim();
-    return caller == self ? callee : caller;
-  }
-
-  Future<void> refreshCalls() async {
-    final userId = Uri.encodeQueryComponent(userIdController.text.trim());
-    final data = await getJson('/api/calls?userId=$userId&limit=20');
-    calls = dataList(data);
-    if (activeCall == null && calls.isNotEmpty) {
-      activeCall = calls.first;
-    }
-  }
-
-  Future<void> loadCalls() async {
-    await runCallAction(() async {
-      await refreshCalls();
-      addLog('CALL LIST ${calls.length}');
-    });
-  }
-
-  Future<void> runCallAction(Future<void> Function() action, {bool quiet = false}) async {
-    setState(() => callLoading = true);
-    try {
-      await action();
-    } catch (error) {
-      if (!quiet) {
-        setState(() => addLog('CALL ERROR $error'));
-      }
-    } finally {
-      if (mounted) {
-        setState(() => callLoading = false);
-      }
-    }
-  }
-
-  Future<Map<String, Object?>> getJson(String requestPath) async {
-    return requestJson('GET', requestPath);
-  }
-
-  Future<Map<String, Object?>> postJson(String requestPath, Map<String, Object?> body) async {
-    return requestJson('POST', requestPath, body: body);
-  }
-
-  Future<Map<String, Object?>> requestJson(String method, String requestPath, {Map<String, Object?>? body}) async {
-    final client = HttpClient();
-    try {
-      final uri = Uri.parse('$baseUrl$requestPath');
-      final request = await client.openUrl(method, uri).timeout(const Duration(seconds: 5));
-      request.headers.contentType = ContentType.json;
-      final token = tokenController.text.trim();
-      if (token.isNotEmpty) {
-        request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
-      }
-      if (body != null) {
-        request.write(jsonEncode(body));
-      }
-      final response = await request.close().timeout(const Duration(seconds: 10));
-      final responseBody = await response.transform(utf8.decoder).join();
-      final decodedRaw = jsonDecode(responseBody);
-      if (decodedRaw is! Map) {
-        throw 'unexpected response: $responseBody';
-      }
-      final decoded = Map<String, Object?>.from(decodedRaw);
-      if (response.statusCode < 200 || response.statusCode >= 300 || decoded['success'] != true) {
-        throw decoded['error'] ?? 'HTTP ${response.statusCode}';
-      }
-      final data = decoded['data'];
-      if (data is Map<String, Object?>) {
-        return data;
-      }
-      return {'items': data};
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  List<Map<String, Object?>> dataList(Map<String, Object?> data) {
-    final items = data['items'];
-    if (items is List) {
-      return items.whereType<Map>().map((item) => Map<String, Object?>.from(item)).toList();
-    }
-    return [];
-  }
-
-  void selectCall(Map<String, Object?> call) {
-    setState(() {
-      activeCall = call;
-      addLog('CALL SELECT ${call['id']}');
-    });
-  }
-
-  void addLog(String line) {
-    final entry = '${DateTime.now().toIso8601String().substring(11, 23)} $line';
-    logs.insert(0, entry);
-    unawaited(saveLocalLog(entry));
-  }
-
-  Future<void> saveLocalLog(String line) async {
-    final db = localDb;
-    if (db == null || !db.isOpen) return;
-    await db.insert('local_logs', {
-      'line': line,
-      'created_at': DateTime.now().toIso8601String(),
-    });
-  }
-
-  Future<void> saveLocalMessage({
-    required String? conversationId,
-    required String sender,
-    required String content,
-    required String direction,
-  }) async {
-    final db = localDb;
-    if (db == null || !db.isOpen || content.isEmpty) return;
-    await db.insert('local_messages', {
-      'conversation_id': conversationId,
-      'sender': sender,
-      'content': content,
-      'direction': direction,
-      'created_at': DateTime.now().toIso8601String(),
-    });
-  }
-
-  Future<void> saveLocalCall(Map<String, Object?> call) async {
-    final db = localDb;
-    final callId = call['id']?.toString();
-    if (db == null || !db.isOpen || callId == null || callId.isEmpty) return;
-    await db.insert('local_calls', {
-      'call_id': callId,
-      'media_type': call['mediaType']?.toString(),
-      'status': call['status']?.toString(),
-      'created_at': DateTime.now().toIso8601String(),
-    });
-  }
+  // --- build ---
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final statusText = authenticated ? '在线' : (connected ? '连接中' : '离线');
-    final statusColor = authenticated ? const Color(0xFF16A34A) : const Color(0xFF64748B);
-
-    if (activeCallVisible && activeCall != null) {
-      return _CallPage(
-        call: activeCall!,
-        peerId: peerIdForCall(activeCall!),
-        sipStatus: sipStatus,
-        cameraController: cameraController,
-        cameraInitFuture: cameraInitFuture,
-        cameraStatus: cameraStatus,
-        onAnswer: incomingRinging && !callLoading ? answerCall : null,
-        onReject: incomingRinging && !callLoading ? rejectCall : null,
-        onHangup: canHangupCall && !callLoading ? hangupCall : null,
-        onDebug: showDebugSheet,
-      );
-    }
 
     return Scaffold(
-      appBar: AppBar(
-        titleSpacing: 16,
-        title: Row(
-          children: [
-            CircleAvatar(
-              radius: 17,
-              backgroundColor: statusColor.withAlpha(31),
-              child: Icon(Icons.business, size: 19, color: statusColor),
+      body: Column(
+        children: [
+          _NetworkStatusBar(socketService: widget.socketService),
+          Expanded(
+            child: IndexedStack(
+              index: _currentTab,
+              children: [
+                // Tab 0 – 消息
+                SessionListScreen(
+                  apiService: widget.apiService,
+                  socketService: widget.socketService,
+                  currentUser: widget.currentUser,
+                  onOpenChat: _openChat,
+                  onOpenContacts: () => _onTabChanged(1),
+                  onLogout: widget.onLogout,
+                  onOpenSettings: () => _onTabChanged(3),
+                  onOpenSearch: _openSearch,
+                  onOpenFileManager: _openFileManager,
+                  onOpenOrganization: _openOrganization,
+                ),
+                // Tab 1 – 通讯录
+                ContactsScreen(
+                  apiService: widget.apiService,
+                  currentUser: widget.currentUser,
+                  onBack: () => _onTabChanged(0),
+                  onStartChat: _openChat,
+                  onOpenFriendRequests: _openFriendRequests,
+                  onOpenContactProfile: _openContactProfile,
+                ),
+                // Tab 2 – 工作台
+                _WorkbenchPage(
+                  onOpenFileManager: _openFileManager,
+                  onOpenOrganization: _openOrganization,
+                  onOpenSearch: _openSearch,
+                ),
+                // Tab 3 – 我
+                SettingsScreen(
+                  apiService: widget.apiService,
+                  storageService: widget.storageService,
+                  currentUser: widget.currentUser,
+                  onBack: () => _onTabChanged(0),
+                  onLogout: widget.onLogout,
+                ),
+              ],
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text('企业 IM · v13 PJSIP稳定通话', style: TextStyle(fontWeight: FontWeight.w700)),
-                  Text('$statusText · ${peerIdController.text.trim()}', style: Theme.of(context).textTheme.bodySmall),
-                ],
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            tooltip: authenticated ? '断开' : '连接',
-            onPressed: connectSocket,
-            icon: Icon(authenticated ? Icons.cloud_done : (connected ? Icons.cloud_sync : Icons.cloud_off)),
-          ),
-          IconButton(
-            tooltip: '设置',
-            onPressed: showSettingsSheet,
-            icon: const Icon(Icons.tune),
           ),
         ],
       ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            _PeerHeader(
-              peerId: peerIdController.text.trim(),
-              statusText: statusText,
-              statusColor: statusColor,
-              callText: callStatusText(),
-              onAudio: callLoading ? null : () => startCall('audio'),
-              onVideo: callLoading ? null : () => startCall('video'),
-              onHangup: canHangupCall && !callLoading ? hangupCall : null,
-              onDebug: showDebugSheet,
-            ),
-            if (outgoingRinging) _OutgoingCallBar(mediaType: activeCall?['mediaType']?.toString() ?? 'audio', onHangup: hangupCall),
-            Expanded(
-              child: ListView.builder(
-                padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
-                itemCount: messages.length,
-                itemBuilder: (context, index) => _MessageBubble(entry: messages[index]),
-              ),
-            ),
-            if (incomingRinging) _IncomingCallBar(
-              mediaType: activeCall?['mediaType']?.toString() ?? 'audio',
-              callerId: activeCallerId,
-              onAnswer: answerCall,
-              onReject: rejectCall,
-            ),
-            DecoratedBox(
-              decoration: BoxDecoration(
-                color: colorScheme.surface,
-                border: Border(top: BorderSide(color: colorScheme.outlineVariant)),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 9, 12, 12),
-                child: Row(
-                  children: [
-                    IconButton.filledTonal(
-                      onPressed: sendPing,
-                      tooltip: '心跳',
-                      icon: const Icon(Icons.sync),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: TextField(
-                        controller: messageController,
-                        minLines: 1,
-                        maxLines: 4,
-                        textInputAction: TextInputAction.send,
-                        onSubmitted: (_) => sendText(),
-                        decoration: InputDecoration(
-                          hintText: authenticated ? '输入消息' : '先连接认证',
-                          filled: true,
-                          fillColor: const Color(0xFFF8FAFC),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    IconButton.filled(
-                      onPressed: authenticated ? sendText : null,
-                      tooltip: '发送',
-                      icon: const Icon(Icons.send),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  String callStatusText() {
-    final ready = readiness?['ready'] == true;
-    final mediaText = ready ? '音视频就绪' : '音视频检测中';
-    if (activeStatus == 'none') return mediaText;
-    if (incomingRinging) return '$mediaText · 来电';
-    if (outgoingRinging) return '$mediaText · 等待接听';
-    if (activeStatus == 'ringing') return '$mediaText · 呼叫中';
-    if (activeStatus == 'answered') return '$mediaText · 通话中';
-    if (activeStatus == 'rejected') return '$mediaText · 已拒绝';
-    if (activeStatus == 'ended') return '$mediaText · 已挂断';
-    return '$mediaText · $activeStatus';
-  }
-
-  void showSettingsSheet() {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (context) => Padding(
-        padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + MediaQuery.of(context).viewInsets.bottom),
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            Text('连接设置', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 14),
-            _Field(label: '服务器', controller: hostController),
-            Row(
-              children: [
-                Expanded(child: _Field(label: 'HTTP', controller: httpPortController, keyboardType: TextInputType.number)),
-                const SizedBox(width: 10),
-                Expanded(child: _Field(label: 'TCP', controller: tcpPortController, keyboardType: TextInputType.number)),
-              ],
-            ),
-            Row(
-              children: [
-                Expanded(child: _Field(label: '当前用户', controller: userIdController)),
-                const SizedBox(width: 10),
-                Expanded(child: _Field(label: '对方用户', controller: peerIdController)),
-              ],
-            ),
-            _Field(label: '会话 ID', controller: conversationIdController),
-            _Field(label: 'Token', controller: tokenController),
-            const SizedBox(height: 8),
-            FilledButton.icon(
-              onPressed: () {
-                Navigator.pop(context);
-                if (!connected) {
-                  unawaited(connectSocket());
-                } else {
-                  sendAuth();
-                }
-                setState(() {});
-              },
-              icon: const Icon(Icons.login),
-              label: const Text('保存并连接'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void showDebugSheet() {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (context) => SizedBox(
-        height: MediaQuery.of(context).size.height * 0.72,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('调试信息', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
-              const SizedBox(height: 8),
-              Text('HTTP $baseUrl · TCP ${tcpPortController.text.trim()} · SIP $sipStatus'),
-              if (mediaConfig?['selfSipUri'] != null) Text('SIP URI ${mediaConfig!['selfSipUri']}'),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  OutlinedButton.icon(onPressed: loadCallReadiness, icon: const Icon(Icons.fact_check), label: const Text('检测')),
-                  OutlinedButton.icon(onPressed: loadCalls, icon: const Icon(Icons.history), label: const Text('记录')),
-                  OutlinedButton.icon(onPressed: connected ? sendAuth : connectSocket, icon: const Icon(Icons.login), label: const Text('认证')),
-                ],
-              ),
-              const Divider(height: 24),
-              FutureBuilder<String>(
-                future: loadNativeDiagnostics(),
-                builder: (context, snapshot) {
-                  final text = snapshot.data ?? (snapshot.connectionState == ConnectionState.done ? 'native diagnostics empty' : 'native diagnostics loading...');
-                  return ExpansionTile(
-                    tilePadding: EdgeInsets.zero,
-                    title: const Text('Native SIP / crash log'),
-                    subtitle: Text(text.split('\n').first, maxLines: 1, overflow: TextOverflow.ellipsis),
-                    children: [
-                      SizedBox(
-                        height: 180,
-                        child: SingleChildScrollView(
-                          child: SelectableText(text, style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
-                        ),
-                      ),
-                    ],
-                  );
-                },
-              ),
-              const Divider(height: 24),
-              Expanded(
-                child: ListView.builder(
-                  reverse: true,
-                  itemCount: logs.length,
-                  itemBuilder: (context, index) => Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 5),
-                    child: SelectableText(logs[index], style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
-                  ),
-                ),
-              ),
-            ],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentTab,
+        onTap: _onTabChanged,
+        type: BottomNavigationBarType.fixed,
+        selectedItemColor: colorScheme.primary,
+        unselectedItemColor: colorScheme.onSurfaceVariant,
+        items: [
+          BottomNavigationBarItem(
+            icon: _totalUnread > 0
+                ? Badge(
+                    label: Text(_totalUnread > 99 ? '99+' : '$_totalUnread'),
+                    child: const Icon(Icons.chat_bubble_outlined),
+                  )
+                : const Icon(Icons.chat_bubble_outlined),
+            activeIcon: _totalUnread > 0
+                ? Badge(
+                    label: Text(_totalUnread > 99 ? '99+' : '$_totalUnread'),
+                    child: const Icon(Icons.chat_bubble),
+                  )
+                : const Icon(Icons.chat_bubble),
+            label: '消息',
           ),
-        ),
+          BottomNavigationBarItem(
+            icon: _pendingFriendRequests > 0
+                ? Badge(
+                    label: Text('$_pendingFriendRequests'),
+                    child: const Icon(Icons.contacts_outlined),
+                  )
+                : const Icon(Icons.contacts_outlined),
+            activeIcon: _pendingFriendRequests > 0
+                ? Badge(
+                    label: Text('$_pendingFriendRequests'),
+                    child: const Icon(Icons.contacts),
+                  )
+                : const Icon(Icons.contacts),
+            label: '通讯录',
+          ),
+          const BottomNavigationBarItem(
+            icon: Icon(Icons.workspaces_outlined),
+            activeIcon: Icon(Icons.workspaces),
+            label: '工作台',
+          ),
+          const BottomNavigationBarItem(
+            icon: Icon(Icons.person_outlined),
+            activeIcon: Icon(Icons.person),
+            label: '我',
+          ),
+        ],
       ),
     );
   }
 }
 
-class _PeerHeader extends StatelessWidget {
-  const _PeerHeader({
-    required this.peerId,
-    required this.statusText,
-    required this.statusColor,
-    required this.callText,
-    required this.onAudio,
-    required this.onVideo,
-    required this.onHangup,
-    required this.onDebug,
-  });
+// ---------------------------------------------------------------------------
+// _NetworkStatusBar
+// ---------------------------------------------------------------------------
 
-  final String peerId;
-  final String statusText;
-  final Color statusColor;
-  final String callText;
-  final VoidCallback? onAudio;
-  final VoidCallback? onVideo;
-  final VoidCallback? onHangup;
-  final VoidCallback onDebug;
+class _NetworkStatusBar extends StatelessWidget {
+  const _NetworkStatusBar({required this.socketService});
+
+  final SocketService socketService;
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colorScheme.surface,
-        border: Border(bottom: BorderSide(color: colorScheme.outlineVariant)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-        child: Row(
-          children: [
-            Stack(
-              children: [
-                CircleAvatar(
-                  radius: 24,
-                  backgroundColor: const Color(0xFFEFF6FF),
-                  child: Text(peerId.isEmpty ? 'U' : peerId.substring(0, 1).toUpperCase(), style: const TextStyle(fontWeight: FontWeight.w800)),
-                ),
-                Positioned(
-                  right: 1,
-                  bottom: 1,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2)),
-                    child: const SizedBox(width: 12, height: 12),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('桌面端 $peerId', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 2),
-                  Text('$statusText · $callText', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: colorScheme.onSurfaceVariant)),
-                ],
-              ),
-            ),
-            IconButton.filledTonal(onPressed: onAudio, tooltip: '语音', icon: const Icon(Icons.call)),
-            const SizedBox(width: 6),
-            IconButton.filledTonal(onPressed: onVideo, tooltip: '视频', icon: const Icon(Icons.videocam)),
-            if (onHangup != null) ...[
-              const SizedBox(width: 6),
-              IconButton.filled(onPressed: onHangup, tooltip: '挂断', icon: const Icon(Icons.call_end)),
-            ],
-            IconButton(onPressed: onDebug, tooltip: '调试', icon: const Icon(Icons.bug_report_outlined)),
-          ],
-        ),
-      ),
-    );
-  }
-}
+    final connected = socketService.connected;
+    final authenticated = socketService.authenticated;
 
-class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.entry});
+    final String text;
+    final Color color;
 
-  final ChatEntry entry;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    if (entry.direction == 'system') {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Center(
-          child: DecoratedBox(
-            decoration: BoxDecoration(color: const Color(0xFFE2E8F0), borderRadius: BorderRadius.circular(8)),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              child: Text(entry.content, style: Theme.of(context).textTheme.bodySmall),
-            ),
-          ),
-        ),
-      );
+    if (authenticated) {
+      text = '已连接';
+      color = const Color(0xFF16A34A);
+    } else if (connected) {
+      text = '连接中...';
+      color = const Color(0xFFCA8A04);
+    } else {
+      text = '未连接';
+      color = const Color(0xFFDC2626);
     }
 
-    return Align(
-      alignment: entry.mine ? Alignment.centerRight : Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.76),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 5),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: entry.mine ? colorScheme.primary : Colors.white,
-              borderRadius: BorderRadius.circular(8),
-              border: entry.mine ? null : Border.all(color: colorScheme.outlineVariant),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-              child: Text(
-                entry.content,
-                style: TextStyle(color: entry.mine ? colorScheme.onPrimary : colorScheme.onSurface, height: 1.35),
-              ),
-            ),
-          ),
-        ),
+    return Container(
+      width: double.infinity,
+      height: 24,
+      color: color.withValues(alpha:0.12),
+      alignment: Alignment.center,
+      child: Text(
+        text,
+        style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w500),
       ),
     );
   }
 }
 
-class _CallPage extends StatelessWidget {
-  const _CallPage({
-    required this.call,
-    required this.peerId,
-    required this.sipStatus,
-    required this.cameraController,
-    required this.cameraInitFuture,
-    required this.cameraStatus,
-    required this.onAnswer,
-    required this.onReject,
-    required this.onHangup,
-    required this.onDebug,
+// ---------------------------------------------------------------------------
+// _WorkbenchPage — 工作台 placeholder
+// ---------------------------------------------------------------------------
+
+class _WorkbenchPage extends StatelessWidget {
+  const _WorkbenchPage({
+    required this.onOpenFileManager,
+    required this.onOpenOrganization,
+    required this.onOpenSearch,
   });
 
-  final Map<String, Object?> call;
-  final String peerId;
-  final String sipStatus;
-  final CameraController? cameraController;
-  final Future<void>? cameraInitFuture;
-  final String cameraStatus;
-  final VoidCallback? onAnswer;
-  final VoidCallback? onReject;
-  final VoidCallback? onHangup;
-  final VoidCallback onDebug;
+  final VoidCallback onOpenFileManager;
+  final VoidCallback onOpenOrganization;
+  final VoidCallback onOpenSearch;
 
   @override
   Widget build(BuildContext context) {
-    final isVideo = call['mediaType']?.toString() == 'video';
-    final status = call['status']?.toString() ?? '';
-    final isRinging = status == 'ringing';
-    final isIncoming = onAnswer != null;
-    final title = isVideo ? '视频通话' : '语音通话';
-    final stateText = isRinging
-        ? (isIncoming ? '$peerId 来电' : '正在呼叫 $peerId')
-        : '与 $peerId 通话中';
     return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        foregroundColor: Colors.white,
-        title: Text(title),
-        actions: [IconButton(onPressed: onDebug, icon: const Icon(Icons.bug_report_outlined))],
+        title: const Text('工作台'),
       ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _ItemCard(
+            icon: Icons.folder_outlined,
+            color: Theme.of(context).colorScheme.primary,
+            title: '文件管理',
+            subtitle: '管理上传的文件和附件',
+            onTap: onOpenFileManager,
+          ),
+          const SizedBox(height: 12),
+          _ItemCard(
+            icon: Icons.business_outlined,
+            color: const Color(0xFF7C3AED),
+            title: '组织架构',
+            subtitle: '查看公司组织架构和成员',
+            onTap: onOpenOrganization,
+          ),
+          const SizedBox(height: 12),
+          _ItemCard(
+            icon: Icons.search,
+            color: const Color(0xFF059669),
+            title: '全局搜索',
+            subtitle: '搜索消息、联系人和文件',
+            onTap: onOpenSearch,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ItemCard extends StatelessWidget {
+  const _ItemCard({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        leading: Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: color.withValues(alpha:0.1),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, color: color),
+        ),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+        subtitle: Text(subtitle, style: const TextStyle(fontSize: 13)),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// _OnboardingPage — 3 onboarding slides with PageView
+// ---------------------------------------------------------------------------
+
+class _OnboardingPage extends StatefulWidget {
+  const _OnboardingPage({required this.onComplete});
+
+  final VoidCallback onComplete;
+
+  @override
+  State<_OnboardingPage> createState() => _OnboardingPageState();
+}
+
+class _OnboardingPageState extends State<_OnboardingPage> {
+  final PageController _controller = PageController();
+  int _currentPage = 0;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Scaffold(
       body: SafeArea(
         child: Column(
           children: [
             Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(18, 12, 18, 0),
-                child: isVideo ? _VideoCallStage(
-                  cameraController: cameraController,
-                  cameraInitFuture: cameraInitFuture,
-                  cameraStatus: cameraStatus,
-                  remoteEnabled: Platform.isAndroid,
-                ) : _AudioCallStage(peerId: peerId),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 12, 24, 6),
-              child: Column(
+              child: PageView(
+                controller: _controller,
+                onPageChanged: (page) => setState(() => _currentPage = page),
                 children: [
-                  Text(stateText, textAlign: TextAlign.center, style: Theme.of(context).textTheme.headlineSmall?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 8),
-                  Text(
-                    isVideo ? 'SIP $sipStatus · 本机摄像头预览' : 'SIP $sipStatus',
-                    style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 15),
+                  // Page 1 — 欢迎使用企业 IM
+                  _buildSlide(
+                    icon: Icons.business,
+                    title: '欢迎使用企业 IM',
+                    subtitle: '安全、高效的企业即时通讯平台',
+                    color: colorScheme.primary,
+                  ),
+                  // Page 2 — 安全通讯
+                  _buildSlide(
+                    icon: Icons.lock_outline,
+                    title: '安全通讯',
+                    subtitle: '端到端加密，保障企业数据安全',
+                    color: const Color(0xFF16A34A),
+                  ),
+                  // Page 3 — 开始使用
+                  _buildSlide(
+                    icon: Icons.rocket_launch_outlined,
+                    title: '开始使用',
+                    subtitle: '一切就绪，立即开启企业协作之旅',
+                    color: const Color(0xFF7C3AED),
+                    action: FilledButton(
+                      onPressed: widget.onComplete,
+                      child: const Text('立即开始'),
+                    ),
                   ),
                 ],
               ),
             ),
+            // Page indicators
             Padding(
-              padding: const EdgeInsets.fromLTRB(24, 12, 24, 28),
+              padding: const EdgeInsets.only(bottom: 48),
               child: Row(
-                children: [
-                  if (onReject != null) ...[
-                    Expanded(
-                      child: FilledButton.icon(
-                        style: FilledButton.styleFrom(backgroundColor: const Color(0xFFDC2626), minimumSize: const Size.fromHeight(54)),
-                        onPressed: onReject,
-                        icon: const Icon(Icons.call_end),
-                        label: const Text('拒绝'),
-                      ),
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(3, (index) {
+                  final active = index == _currentPage;
+                  return AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    margin: const EdgeInsets.symmetric(horizontal: 4),
+                    width: active ? 24 : 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: active ? colorScheme.primary : colorScheme.outlineVariant,
+                      borderRadius: BorderRadius.circular(4),
                     ),
-                    const SizedBox(width: 14),
-                  ],
-                  if (onAnswer != null) ...[
-                    Expanded(
-                      child: FilledButton.icon(
-                        style: FilledButton.styleFrom(backgroundColor: const Color(0xFF16A34A), minimumSize: const Size.fromHeight(54)),
-                        onPressed: onAnswer,
-                        icon: const Icon(Icons.call),
-                        label: const Text('接听'),
-                      ),
-                    ),
-                  ] else ...[
-                    Expanded(
-                      child: FilledButton.icon(
-                        style: FilledButton.styleFrom(backgroundColor: const Color(0xFFDC2626), minimumSize: const Size.fromHeight(54)),
-                        onPressed: onHangup,
-                        icon: const Icon(Icons.call_end),
-                        label: Text(isRinging ? '取消' : '挂断'),
-                      ),
-                    ),
-                  ],
-                ],
+                  );
+                }),
               ),
             ),
           ],
@@ -1258,199 +705,76 @@ class _CallPage extends StatelessWidget {
       ),
     );
   }
-}
 
-class _VideoCallStage extends StatelessWidget {
-  const _VideoCallStage({
-    required this.cameraController,
-    required this.cameraInitFuture,
-    required this.cameraStatus,
-    required this.remoteEnabled,
-  });
-
-  final CameraController? cameraController;
-  final Future<void>? cameraInitFuture;
-  final String cameraStatus;
-  final bool remoteEnabled;
-
-  @override
-  Widget build(BuildContext context) {
-    final controller = cameraController;
-    final future = cameraInitFuture;
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: ColoredBox(
-        color: Colors.black,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            if (remoteEnabled)
-              const AndroidView(viewType: 'enterprise_im/pjsip_video_view')
-            else
-              const Center(child: Text('当前平台不支持原生远端视频窗口', style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 16))),
-            Positioned(
-              right: 12,
-              top: 12,
-              width: 120,
-              height: 170,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: ColoredBox(
-                  color: const Color(0xFF111827),
-                  child: controller != null && future != null
-                    ? FutureBuilder<void>(
-                        future: future,
-                        builder: (context, snapshot) {
-                          if (snapshot.connectionState == ConnectionState.done && controller.value.isInitialized) {
-                            return FittedBox(
-                              fit: BoxFit.cover,
-                              child: SizedBox(
-                                width: controller.value.previewSize?.height ?? 720,
-                                height: controller.value.previewSize?.width ?? 1280,
-                                child: CameraPreview(controller),
-                              ),
-                            );
-                          }
-                          return const Center(child: CircularProgressIndicator(color: Colors.white));
-                        },
-                      )
-                    : Center(
-                        child: Text(
-                          cameraStatus == 'no_camera' ? '无摄像头' : '摄像头',
-                          style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 12),
-                        ),
-                      ),
-                ),
-              ),
-            ),
-            Positioned(
-              left: 12,
-              right: 12,
-              bottom: 12,
-              child: DecoratedBox(
-                decoration: BoxDecoration(color: Colors.black.withAlpha(115), borderRadius: BorderRadius.circular(8)),
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  child: Text('主画面：远端视频；右上角：本机预览', textAlign: TextAlign.center, style: TextStyle(color: Colors.white)),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AudioCallStage extends StatelessWidget {
-  const _AudioCallStage({required this.peerId});
-
-  final String peerId;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
+  Widget _buildSlide({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Color color,
+    Widget? action,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          CircleAvatar(
-            radius: 54,
-            backgroundColor: const Color(0xFF1D4ED8),
-            child: Text(peerId.isEmpty ? 'U' : peerId.substring(0, 1).toUpperCase(), style: const TextStyle(color: Colors.white, fontSize: 40, fontWeight: FontWeight.w800)),
+          Container(
+            width: 100,
+            height: 100,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha:0.1),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, size: 48, color: color),
           ),
-          const SizedBox(height: 24),
-          const Icon(Icons.graphic_eq, color: Color(0xFF93C5FD), size: 56),
+          const SizedBox(height: 32),
+          Text(
+            title,
+            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            subtitle,
+            style: TextStyle(
+              fontSize: 16,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          if (action != null) ...[
+            const SizedBox(height: 32),
+            action,
+          ],
         ],
       ),
     );
   }
 }
 
-class _OutgoingCallBar extends StatelessWidget {
-  const _OutgoingCallBar({required this.mediaType, required this.onHangup});
+// ---------------------------------------------------------------------------
+// _LoadingScreen — unchanged from original
+// ---------------------------------------------------------------------------
 
-  final String mediaType;
-  final VoidCallback onHangup;
-
-  @override
-  Widget build(BuildContext context) {
-    final text = mediaType == 'video' ? '视频呼叫中，等待对方接听' : '语音呼叫中，等待对方接听';
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-      child: DecoratedBox(
-        decoration: BoxDecoration(color: const Color(0xFFFFFBEB), borderRadius: BorderRadius.circular(8)),
-        child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: Row(
-            children: [
-              const Icon(Icons.call_made, color: Color(0xFFD97706)),
-              const SizedBox(width: 8),
-              Expanded(child: Text(text)),
-              FilledButton.tonalIcon(onPressed: onHangup, icon: const Icon(Icons.call_end), label: const Text('取消')),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _IncomingCallBar extends StatelessWidget {
-  const _IncomingCallBar({
-    required this.mediaType,
-    required this.callerId,
-    required this.onAnswer,
-    required this.onReject,
-  });
-
-  final String mediaType;
-  final String callerId;
-  final VoidCallback onAnswer;
-  final VoidCallback onReject;
+class _LoadingScreen extends StatelessWidget {
+  const _LoadingScreen();
 
   @override
   Widget build(BuildContext context) {
-    final text = mediaType == 'video' ? '$callerId 发起视频通话' : '$callerId 发起语音通话';
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-      child: DecoratedBox(
-        decoration: BoxDecoration(color: const Color(0xFFEFF6FF), borderRadius: BorderRadius.circular(8)),
-        child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: Row(
-            children: [
-              const Icon(Icons.call_received, color: Color(0xFF2563EB)),
-              const SizedBox(width: 8),
-              Expanded(child: Text(text)),
-              OutlinedButton(onPressed: onReject, child: const Text('拒绝')),
-              const SizedBox(width: 8),
-              FilledButton(onPressed: onAnswer, child: const Text('接听')),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _Field extends StatelessWidget {
-  const _Field({required this.label, required this.controller, this.keyboardType});
-
-  final String label;
-  final TextEditingController controller;
-  final TextInputType? keyboardType;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: TextField(
-        controller: controller,
-        keyboardType: keyboardType,
-        decoration: InputDecoration(
-          border: const OutlineInputBorder(),
-          labelText: label,
-          isDense: true,
+    return const Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.business, size: 64, color: Color(0xFF2563EB)),
+            SizedBox(height: 24),
+            Text(
+              '企业 IM',
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
+            ),
+            SizedBox(height: 24),
+            CircularProgressIndicator(),
+          ],
         ),
       ),
     );

@@ -3,6 +3,7 @@ package com.enterpriseim.server.ws;
 import lombok.val;
 
 import com.enterpriseim.server.config.ImProperties;
+import com.enterpriseim.server.auth.TokenService;
 import com.enterpriseim.server.message.MessageService;
 import com.enterpriseim.server.tcp.TcpMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -19,12 +20,14 @@ public class ImWebSocketHandler extends TextWebSocketHandler {
     private final ObjectMapper objectMapper;
     private final WebSocketSessionRegistry sessions;
     private final ImProperties properties;
+    private final TokenService tokenService;
     private final MessageService messageService;
 
-    public ImWebSocketHandler(ObjectMapper objectMapper, WebSocketSessionRegistry sessions, ImProperties properties, MessageService messageService) {
+    public ImWebSocketHandler(ObjectMapper objectMapper, WebSocketSessionRegistry sessions, ImProperties properties, TokenService tokenService, MessageService messageService) {
         this.objectMapper = objectMapper;
         this.sessions = sessions;
         this.properties = properties;
+        this.tokenService = tokenService;
         this.messageService = messageService;
     }
 
@@ -44,6 +47,9 @@ public class ImWebSocketHandler extends TextWebSocketHandler {
             case "WEBRTC_SIGNAL":
                 handleWebRtcSignal(session, message);
                 break;
+            case "TYPING":
+                handleTyping(session, message);
+                break;
             case "ACK":
                 write(session, response(message, "ACK_OK", payload("ack", true)));
                 break;
@@ -59,15 +65,26 @@ public class ImWebSocketHandler extends TextWebSocketHandler {
 
     private void handleAuth(WebSocketSession session, TcpMessage message) throws Exception {
         val token = message.payload() == null ? "" : message.payload().path("token").asText("");
-        if (!token.startsWith(properties.getAuth().getDemoTokenPrefix())) {
+        val userId = resolveUserId(token);
+        if (userId == null) {
             write(session, response(message, "AUTH_FAILED", payload("message", "invalid token")));
             session.close(CloseStatus.NOT_ACCEPTABLE.withReason("invalid token"));
             return;
         }
-
-        val userId = token.substring(properties.getAuth().getDemoTokenPrefix().length());
         sessions.bind(userId, session);
         write(session, response(message, "AUTH_OK", payload("userId", userId)));
+    }
+
+    private String resolveUserId(String token) {
+        if (token.startsWith(properties.getAuth().getDemoTokenPrefix())) {
+            return token.substring(properties.getAuth().getDemoTokenPrefix().length());
+        }
+        try {
+            val claims = tokenService.verify(token);
+            return "user".equals(claims.scope) ? claims.subject : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void handleText(WebSocketSession session, TcpMessage message) throws Exception {
@@ -78,6 +95,10 @@ public class ImWebSocketHandler extends TextWebSocketHandler {
         if (message.to() == null || message.to().trim().isEmpty()) {
             return;
         }
+        val deliveryPayload = message.payload() != null && message.payload().isObject()
+                ? (ObjectNode) message.payload().deepCopy()
+                : objectMapper.createObjectNode();
+        deliveryPayload.put("messageId", persisted.messageId());
 
         val delivery = new TcpMessage(
                 message.version(),
@@ -87,7 +108,7 @@ public class ImWebSocketHandler extends TextWebSocketHandler {
                 message.to(),
                 message.conversationId(),
                 System.currentTimeMillis(),
-                message.payload()
+                deliveryPayload
         );
         sessions.findSession(message.to()).ifPresent(target -> {
             try {
@@ -121,6 +142,28 @@ public class ImWebSocketHandler extends TextWebSocketHandler {
                 throw new IllegalStateException("Failed to deliver websocket WebRTC signal", e);
             }
         });
+    }
+
+    private void handleTyping(WebSocketSession session, TcpMessage message) throws Exception {
+        if (message.to() != null) {
+            sessions.findSession(message.to()).ifPresent(target -> {
+                val delivery = new TcpMessage(
+                        message.version() == null ? "1" : message.version(),
+                        "TYPING_DELIVER",
+                        message.requestId(),
+                        message.from(),
+                        message.to(),
+                        message.conversationId(),
+                        System.currentTimeMillis(),
+                        message.payload()
+                );
+                try {
+                    write(target, delivery);
+                } catch (Exception e) {
+                    throw new IllegalStateException("Failed to deliver typing indicator", e);
+                }
+            });
+        }
     }
 
     private TcpMessage response(TcpMessage source, String type, ObjectNode payload) {

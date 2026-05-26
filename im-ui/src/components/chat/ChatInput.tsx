@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react"
 import type { ForwardedRef } from "react"
 import {
+  AtSign,
   Camera,
   FileText,
   Image as ImageIcon,
@@ -22,7 +23,7 @@ import { cn } from "@/lib/utils"
 import type { Message } from "@/types"
 
 interface ChatInputProps {
-  onSendMessage: (content: string, type: "text" | "image" | "file" | "voice" | "card", extra?: any) => void
+  onSendMessage: (content: string, type: "text" | "image" | "file" | "voice" | "card" | "location", extra?: any) => void
   replyingTo?: Message | null
   onCancelReply?: () => void
   editingMessage?: Message | null
@@ -33,6 +34,7 @@ interface ChatInputProps {
   defaultMessage?: string
   onMessageChange?: (message: string) => void
   onScreenshot?: () => void
+  isGroup?: boolean
 }
 
 export type ChatInputRef = {
@@ -54,6 +56,7 @@ export const ChatInput = forwardRef(({
   defaultMessage = "",
   onMessageChange,
   onScreenshot,
+  isGroup,
 }: ChatInputProps, ref: ForwardedRef<ChatInputRef>) => {
   const [message, setMessage] = useState(defaultMessage)
   const [mode, setMode] = useState<"text" | "voice">("text")
@@ -66,6 +69,9 @@ export const ChatInput = forwardRef(({
   const inputRef = useRef<HTMLInputElement>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const recordDurationRef = useRef(0)
 
   useEffect(() => {
     setMessage((current) => (current === defaultMessage ? current : defaultMessage))
@@ -137,19 +143,54 @@ export const ChatInput = forwardRef(({
     inputRef.current?.focus()
   }
 
-  const startRecording = (event: React.MouseEvent | React.TouchEvent) => {
+  const startRecording = async (event: React.MouseEvent | React.TouchEvent) => {
     event.preventDefault()
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      window.alert("当前浏览器不支持录音")
+      mediaRecorderRef.current?.stop()
+      return
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => null)
+    if (!stream) {
+      window.alert("无法访问麦克风")
+      return
+    }
+    audioChunksRef.current = []
+    const recorder = new MediaRecorder(stream)
+    mediaRecorderRef.current = recorder
+    recorder.ondataavailable = (evt) => {
+      if (evt.data.size > 0) audioChunksRef.current.push(evt.data)
+    }
+    recorder.onstop = () => {
+      stream.getTracks().forEach((track) => track.stop())
+      if (recordDurationRef.current < 1 || audioChunksRef.current.length === 0) return
+      const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || "audio/webm" })
+      const file = new File([blob], `voice-${Date.now()}.webm`, { type: blob.type || "audio/webm" })
+      const url = URL.createObjectURL(blob)
+      onSendMessage(`语音消息 (${recordDurationRef.current}s)`, "voice", {
+        rawFile: file,
+        fileUrl: url,
+        fileName: file.name,
+        fileSize: file.size,
+        voiceDuration: recordDurationRef.current,
+      })
+    }
     setIsRecording(true)
     setRecordDuration(0)
+    recordDurationRef.current = 0
+    recorder.start()
     timerRef.current = setInterval(() => {
       setRecordDuration((prev) => {
         if (prev >= 60) {
           if (timerRef.current) clearInterval(timerRef.current)
           setIsRecording(false)
-          onSendMessage("语音消息 (60s)", "voice", { voiceDuration: 60 })
+          recordDurationRef.current = 60
+          mediaRecorderRef.current?.stop()
           return 60
         }
-        return prev + 1
+        const next = prev + 1
+        recordDurationRef.current = next
+        return next
       })
     }, 1000)
   }
@@ -162,10 +203,12 @@ export const ChatInput = forwardRef(({
 
     if (recordDuration < 1) {
       window.alert("录制时间太短")
+      mediaRecorderRef.current?.stop()
       return
     }
 
-    onSendMessage(`语音消息 (${recordDuration}s)`, "voice", { voiceDuration: recordDuration })
+    recordDurationRef.current = recordDuration
+    mediaRecorderRef.current?.stop()
   }
 
   const handleFileSelect = (type: "image" | "file") => {
@@ -187,15 +230,16 @@ export const ChatInput = forwardRef(({
 
         const count = Math.min(files.length, 9)
         if (files.length > 9) window.alert("最多只能发送 9 张图片")
-        Array.from(files).slice(0, count).forEach((file, index) => {
+        Array.from(files).slice(0, count).forEach((file) => {
           const url = URL.createObjectURL(file)
-          setTimeout(() => onSendMessage("图片", "image", { fileUrl: url }), index * 100)
+          onSendMessage("图片", "image", { rawFile: file, fileUrl: url, fileName: file.name, fileSize: file.size })
         })
         return
       }
 
       const file = files[0]
       onSendMessage(file.name, "file", {
+        rawFile: file,
         fileName: file.name,
         fileSize: file.size,
         fileUrl: URL.createObjectURL(file),
@@ -206,21 +250,70 @@ export const ChatInput = forwardRef(({
   }
 
   const handleEditorSave = (blob: Blob) => {
+    const file = new File([blob], `edited-image-${Date.now()}.png`, { type: blob.type || "image/png" })
     const url = URL.createObjectURL(blob)
-    onSendMessage("图片", "image", { fileUrl: url })
+    onSendMessage("图片", "image", { rawFile: file, fileUrl: url, fileName: file.name, fileSize: file.size })
     setSelectedImageSrc(null)
   }
 
   const handleCardSelect = () => {
+    if (mentionUsers.length === 0) {
+      window.alert("当前没有可发送的真实联系人")
+      return
+    }
+    const selectedId = window.prompt("输入要发送的联系人 ID", mentionUsers[0].id)
+    const selected = mentionUsers.find((user) => user.id === selectedId)
+    if (!selected) {
+      window.alert("未找到该联系人")
+      return
+    }
     onSendMessage("个人名片", "card", {
       cardInfo: {
-        userId: "user_007",
-        name: "企业成员",
-        avatar: "https://api.dicebear.com/9.x/initials/svg?seed=member",
-        signature: "企业通讯录成员",
+        userId: selected.id,
+        name: selected.name,
+        avatar: selected.avatar || "",
+        signature: "企业通讯录联系人",
       },
     })
     setShowMore(false)
+  }
+
+  const handleLocationShare = async () => {
+    const fallback = () => {
+      const raw = window.prompt("输入位置：名称,纬度,经度", "当前位置,39.9042,116.4074")
+      if (!raw) return
+      const [name = "位置", latRaw, lngRaw] = raw.split(",").map((part) => part.trim())
+      const latitude = Number(latRaw)
+      const longitude = Number(lngRaw)
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        window.alert("位置格式错误")
+        return
+      }
+      const locationInfo = { latitude, longitude, name, address: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}` }
+      onSendMessage(JSON.stringify(locationInfo), "location", { locationInfo })
+      setShowMore(false)
+    }
+
+    if (!navigator.geolocation) {
+      fallback()
+      return
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords
+        const locationInfo = {
+          latitude,
+          longitude,
+          name: "当前位置",
+          address: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
+        }
+        onSendMessage(JSON.stringify(locationInfo), "location", { locationInfo })
+        setShowMore(false)
+      },
+      fallback,
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 },
+    )
   }
 
   return (
@@ -253,7 +346,7 @@ export const ChatInput = forwardRef(({
       )}
 
       {isRecording && (
-        <div className="fixed inset-0 z-50 flex select-none flex-col items-center justify-center bg-black/50 text-white">
+        <div className="fixed inset-0 z-50 flex select-none flex-col items-center justify-center bg-black/50 text-white" onMouseUp={stopRecording} onTouchEnd={stopRecording}>
           <div className="mb-4 rounded-full bg-primary p-8 animate-pulse">
             <Mic className="h-12 w-12" />
           </div>
@@ -305,6 +398,11 @@ export const ChatInput = forwardRef(({
         </div>
 
         <div className="mb-0.5 flex items-center gap-1">
+          {isGroup && mentionUsers.length > 0 && (
+            <Button variant="ghost" size="icon" className="shrink-0 text-muted-foreground" onClick={() => setMentionOpen(true)}>
+              <AtSign className="h-5 w-5" />
+            </Button>
+          )}
           <Popover>
             <PopoverTrigger asChild>
               <Button variant="ghost" size="icon" className="shrink-0 text-muted-foreground">
@@ -340,7 +438,7 @@ export const ChatInput = forwardRef(({
           <PanelItem icon={Camera} label="拍摄" onClick={() => handleFileSelect("image")} />
           <PanelItem icon={FileText} label="文件" onClick={() => handleFileSelect("file")} />
           <PanelItem icon={UserIcon} label="名片" onClick={handleCardSelect} />
-          <PanelItem icon={MapPin} label="位置" onClick={() => window.alert("位置功能待实现")} />
+          <PanelItem icon={MapPin} label="位置" onClick={handleLocationShare} />
           <PanelItem icon={Scissors} label="截屏" onClick={() => {
             onScreenshot?.()
             setShowMore(false)

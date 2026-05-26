@@ -7,7 +7,10 @@ import {
   Edit,
   Flame,
   Forward,
+  Globe,
   ListChecks,
+  MapPin,
+  Navigation,
   Reply,
   Star,
   ThumbsUp,
@@ -26,8 +29,11 @@ import {
 } from "@/components/ui/context-menu"
 import { cn } from "@/lib/utils"
 import type { Message, User } from "@/types"
+import { fetchLinkPreviewApi, type LinkPreviewDto } from "@/services/api"
+import { useAuthStore } from "@/stores/useAuthStore"
 import { CardMessage } from "./MessageTypes/CardMessage"
 import { FileMessage } from "./MessageTypes/FileMessage"
+import { VideoMessage } from "./MessageTypes/VideoMessage"
 import { VoiceMessage } from "./MessageTypes/VoiceMessage"
 
 interface MessageBubbleProps {
@@ -48,8 +54,10 @@ interface MessageBubbleProps {
   onLike?: () => void
   onAvatarClick?: (userId: string) => void
   onReadStatusClick?: () => void
+  onFileTransferProgress?: (progress: number, status: string) => void
   quotedMessage?: Message
   isGroup?: boolean
+  currentUserName?: string
   onResend?: () => void
 }
 
@@ -58,6 +66,8 @@ const typeLabel: Partial<Record<Message["type"], string>> = {
   voice: "语音",
   file: "文件",
   card: "名片",
+  video: "视频",
+  location: "位置",
 }
 
 export function MessageBubble({
@@ -79,7 +89,9 @@ export function MessageBubble({
   onLike,
   onAvatarClick,
   onReadStatusClick,
+  onFileTransferProgress,
   quotedMessage,
+  currentUserName,
   onResend,
 }: MessageBubbleProps) {
   const isGroup = propIsGroup ?? message.sessionId.includes("group")
@@ -149,6 +161,96 @@ export function MessageBubble({
     )
   }
 
+  const extractUrls = (text: string): string[] => {
+    const urlRegex = /(https?:\/\/[^\s]+)/g
+    return text.match(urlRegex) || []
+  }
+
+  const LinkPreviewCard = ({ url }: { url: string }) => {
+    const token = useAuthStore((s) => s.token)
+    const [preview, setPreview] = useState<LinkPreviewDto | null>(null)
+    const [fetchFailed, setFetchFailed] = useState(false)
+    let domain = ""
+    try { domain = new URL(url).hostname } catch { domain = url.slice(0, 30) }
+
+    useEffect(() => {
+      if (!token) return
+      let cancelled = false
+      fetchLinkPreviewApi(url, token)
+        .then((data) => { if (!cancelled) setPreview(data) })
+        .catch(() => { if (!cancelled) setFetchFailed(true) })
+      return () => { cancelled = true }
+    }, [url, token])
+
+    const title = preview?.title || domain
+    const desc = preview?.description || url
+    const imageUrl = preview?.imageUrl
+    const site = preview?.siteName
+
+    return (
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-2 block rounded-lg border bg-muted/30 transition-colors hover:bg-muted/50 overflow-hidden"
+        onClick={(event) => event.stopPropagation()}
+      >
+        {imageUrl && !fetchFailed && (
+          <img src={imageUrl} alt="" className="w-full h-32 object-cover" loading="lazy" />
+        )}
+        <div className="flex items-start gap-3 p-3">
+          {!imageUrl && (
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-primary/10 text-primary">
+              <Globe className="h-5 w-5" />
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium">{title}</p>
+            {site && <p className="text-xs text-muted-foreground">{site}</p>}
+            <p className="truncate text-xs text-muted-foreground">{desc}</p>
+          </div>
+        </div>
+      </a>
+    )
+  }
+
+  const parseLocation = () => {
+    if (message.locationInfo) return message.locationInfo
+    try {
+      const parsed = JSON.parse(message.content) as Message["locationInfo"]
+      if (parsed && Number.isFinite(parsed.latitude) && Number.isFinite(parsed.longitude)) {
+        return parsed
+      }
+    } catch {
+      return undefined
+    }
+    return undefined
+  }
+
+  const LocationMessage = () => {
+    const location = parseLocation()
+    if (!location) return <p className="text-sm">{message.content}</p>
+    const mapUrl = `https://www.google.com/maps?q=${encodeURIComponent(`${location.latitude},${location.longitude}`)}`
+    return (
+      <a
+        href={mapUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex min-w-56 max-w-72 items-center gap-3 rounded-lg border bg-background/80 p-3 text-foreground transition-colors hover:bg-muted/70"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded bg-primary/10 text-primary">
+          <MapPin className="h-6 w-6" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">{location.name || "位置"}</p>
+          <p className="truncate text-xs text-muted-foreground">{location.address || `${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}`}</p>
+        </div>
+        <Navigation className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </a>
+    )
+  }
+
   const formatText = (text: string) => {
     const urlRegex = /(https?:\/\/[^\s]+)/g
     const phoneRegex = /(1[3-9]\d{9})/g
@@ -186,10 +288,15 @@ export function MessageBubble({
 
         return subPart.split(mentionRegex).map((mentionPart, mentionIndex) => {
           if (mentionPart.match(mentionRegex)) {
+            const mentionName = mentionPart.slice(1) // remove @
+            const isMeMention = currentUserName && (mentionName === currentUserName || mentionName === "所有人")
             return (
               <span
                 key={`${index}-${subIndex}-${mentionIndex}`}
-                className="cursor-pointer text-blue-500 hover:underline"
+                className={cn(
+                  "cursor-pointer hover:underline",
+                  isMeMention ? "rounded bg-blue-100 px-0.5 font-semibold text-blue-700" : "text-blue-500"
+                )}
                 onClick={(event) => event.stopPropagation()}
               >
                 {mentionPart}
@@ -238,8 +345,16 @@ export function MessageBubble({
     }
 
     switch (message.type) {
-      case "text":
-        return <p className="whitespace-pre-wrap break-words text-sm">{formatText(message.content)}</p>
+      case "text": {
+        const urls = extractUrls(message.content)
+        const hasUrl = urls.length > 0
+        return (
+          <div>
+            <p className="whitespace-pre-wrap break-words text-sm">{formatText(message.content)}</p>
+            {hasUrl && urls.slice(0, 1).map((url) => <LinkPreviewCard key={url} url={url} />)}
+          </div>
+        )
+      }
       case "image":
         return (
           <div
@@ -255,11 +370,15 @@ export function MessageBubble({
           </div>
         )
       case "voice":
-        return <VoiceMessage duration={message.voiceDuration} isMe={isMe} />
+        return <VoiceMessage url={message.fileUrl} duration={message.voiceDuration} isMe={isMe} />
       case "file":
-        return <FileMessage name={message.fileName} size={message.fileSize} url={message.fileUrl} isMe={isMe} />
+        return <FileMessage fileId={message.fileId} name={message.fileName} size={message.fileSize} url={message.fileUrl} isMe={isMe} onTransferProgress={onFileTransferProgress} />
       case "card":
         return <CardMessage {...message.cardInfo!} />
+      case "video":
+        return <VideoMessage url={message.fileUrl} thumbnail={message.videoThumbnail} fileName={message.fileName} fileSize={message.fileSize} isMe={isMe} />
+      case "location":
+        return <LocationMessage />
       default:
         return <p className="text-sm">不支持的消息类型</p>
     }

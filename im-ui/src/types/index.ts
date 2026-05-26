@@ -6,6 +6,7 @@ export interface User {
   email?: string
   phone?: string
   region?: string
+  gender?: "male" | "female"
   signature?: string
   bio?: string
   isOfficial?: boolean // Official account
@@ -29,11 +30,12 @@ export interface Message {
   sessionId: string
   senderId: string
   content: string
-  type: "text" | "image" | "voice" | "file" | "video" | "card" | "system" | "record"
+  type: "text" | "image" | "voice" | "file" | "video" | "card" | "location" | "system" | "record"
   timestamp: number
   status: "sending" | "sent" | "read" | "failed"
   isRead?: boolean
   fileUrl?: string
+  fileId?: string
   fileName?: string
   fileSize?: number
   videoThumbnail?: string
@@ -43,6 +45,12 @@ export interface Message {
     name: string
     avatar: string
     signature?: string
+  }
+  locationInfo?: {
+    latitude: number
+    longitude: number
+    name?: string
+    address?: string
   }
   recordInfo?: {
     title: string
@@ -61,6 +69,7 @@ export interface Session {
   type: "single" | "group"
   targetId: string // User ID or Group ID
   name: string
+  remark?: string
   avatar: string
   lastMessage?: Message
   unreadCount: number
@@ -71,6 +80,8 @@ export interface Session {
   isSavedToContacts?: boolean // Save group to contacts
   isBlocked?: boolean // Block user
   isScreenshotNotificationEnabled?: boolean // Screenshot notification
+  isRecallNoticeEnabled?: boolean // Recall notice
+  isDisplayMemberNicknames?: boolean // Show member nicknames in group
   draft?: string // Message draft
   updatedAt: number
 }

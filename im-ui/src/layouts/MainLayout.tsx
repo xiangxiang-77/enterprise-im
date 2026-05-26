@@ -11,7 +11,6 @@ export default function MainLayout() {
   const navigate = useNavigate()
   const { user } = useAuthStore()
   const { sessions } = useChatStore()
-
   const unreadCount = sessions.reduce((acc, session) => acc + (session.unreadCount || 0), 0)
 
   const tabs = [

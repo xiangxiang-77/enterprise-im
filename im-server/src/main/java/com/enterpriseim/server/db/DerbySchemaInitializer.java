@@ -36,7 +36,9 @@ public class DerbySchemaInitializer {
         for (String path : migrations()) {
             String sql = read(path)
                     .replace(" TEXT", " CLOB")
-                    .replace(" text", " CLOB");
+                    .replace(" text", " CLOB")
+                    .replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE")
+                    .replace("CREATE INDEX IF NOT EXISTS", "CREATE INDEX");
             for (String statement : sql.split(";")) {
                 execute(statement.trim());
             }
@@ -53,19 +55,39 @@ public class DerbySchemaInitializer {
     private List<String> migrations() {
         return Arrays.asList(
                 "db/migration/V1__init_core_schema.sql",
-                "db/migration/V6__call_media_gateway_state.sql"
+                "db/migration/V6__call_media_gateway_state.sql",
+                "db/migration/V7__advanced_im_features.sql",
+                "db/migration/V8__group_policy_configs.sql",
+                "db/migration/V9__notification_and_conversation_settings.sql",
+                "db/migration/V10__notification_events.sql",
+                "db/migration/V11__file_lifecycle_and_rate_policies.sql",
+                "db/migration/V12__auth_provider_boundaries.sql",
+                "db/migration/V13__group_advanced_controls.sql",
+                "db/migration/V14__push_provider_boundaries.sql",
+                "db/migration/V15__file_chunk_upload_and_preview_adapters.sql",
+                "db/migration/V16__admin_production_closeout.sql",
+                "db/migration/V17__disable_demo_sms_provider.sql",
+                "db/migration/V18__department_permissions.sql",
+                "db/migration/V19__app_templates.sql",
+                "db/migration/V20__app_version_enhancements.sql"
         );
     }
 
     private void seedDemoAdmin() {
-        execute("INSERT INTO users(id, phone, email, display_name, status) "
-                + "VALUES ('u_admin_demo', '18800000000', 'admin@example.com', '绯荤粺绠＄悊鍛?, 'active')");
+        execute("INSERT INTO enterprises(id, name, code) "
+                + "VALUES ('ent_demo', '演示企业', 'DEMO')");
+        execute("INSERT INTO departments(id, enterprise_id, parent_id, name, sort_order) "
+                + "VALUES ('dept_demo_root', 'ent_demo', NULL, '默认部门', 0)");
+        execute("INSERT INTO users(id, enterprise_id, phone, email, display_name, status) "
+                + "VALUES ('u_admin_demo', 'ent_demo', '18800000000', 'admin@example.com', '系统管理员', 'active')");
         execute("INSERT INTO admin_users(id, user_id, role_id, enabled) "
                 + "VALUES ('admin_demo_super', 'u_admin_demo', 'role_super_admin', TRUE)");
-        execute("UPDATE admin_roles SET description = '鍏ㄩ儴鏉冮檺' WHERE id = 'role_super_admin'");
-        execute("UPDATE admin_roles SET description = '缁勭粐涓庤繍钀ョ鐞? WHERE id = 'role_operator'");
-        execute("UPDATE admin_roles SET description = '娑堟伅瀹¤涓庨闄╂帶鍒? WHERE id = 'role_auditor'");
-        execute("UPDATE admin_roles SET description = '鍙杩愮淮' WHERE id = 'role_readonly_ops'");
+        execute("INSERT INTO department_members(department_id, user_id, position_name) "
+                + "VALUES ('dept_demo_root', 'u_admin_demo', '系统管理员')");
+        execute("UPDATE admin_roles SET description = '超级管理员' WHERE id = 'role_super_admin'");
+        execute("UPDATE admin_roles SET description = '运营管理员' WHERE id = 'role_operator'");
+        execute("UPDATE admin_roles SET description = '审计员' WHERE id = 'role_auditor'");
+        execute("UPDATE admin_roles SET description = '只读运维' WHERE id = 'role_readonly_ops'");
     }
 
     private String read(String path) throws Exception {

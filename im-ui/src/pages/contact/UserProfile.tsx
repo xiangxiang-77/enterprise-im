@@ -1,10 +1,11 @@
 import { useNavigate, useParams } from "react-router-dom"
-import { ChevronLeft, Globe, MessageSquare, MoreHorizontal, Phone } from "lucide-react"
+import { ChevronLeft, Globe, MessageSquare, MoreHorizontal, Phone, UserPlus, Copy, Mars, Venus } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { useAuthStore } from "@/stores/useAuthStore"
 import { useChatStore } from "@/stores/useChatStore"
+import { createFriendRequestApi } from "@/services/api"
 
 export default function UserProfile() {
   const { id } = useParams<{ id: string }>()
@@ -12,7 +13,20 @@ export default function UserProfile() {
   const { createSession, sessions, users } = useChatStore()
   const { user: currentUser } = useAuthStore()
 
+  const token = useAuthStore((s) => s.token)
   const user = id === currentUser?.id ? currentUser : id ? users[id] : undefined
+  const isFriend = id ? sessions.some((s) => s.type === "single" && s.targetId === id) : false
+
+  const handleAddFriend = async () => {
+    if (!token || !id) return
+    try {
+      await createFriendRequestApi({ receiverId: id, message: "请求添加你为好友" }, token)
+    } catch { /* ignore */ }
+  }
+
+  const handleCopyId = () => {
+    if (user?.id) navigator.clipboard?.writeText(user.id)
+  }
 
   if (!user) {
     return <div className="flex h-full items-center justify-center">用户不存在</div>
@@ -50,9 +64,16 @@ export default function UserProfile() {
             </Avatar>
             <div className="min-w-0 flex-1 pt-1">
               <h1 className="truncate text-xl font-bold">{user.name}</h1>
-              <p className="mt-1 text-sm text-muted-foreground">ID: {user.id.slice(0, 8)}</p>
               <p className="mt-1 flex items-center gap-1 text-sm text-muted-foreground">
-                <Globe className="h-3 w-3" /> 地区：{user.region || "北京"}
+                短号: {user.phone || user.id.slice(0, 8)}
+                <button onClick={handleCopyId} className="ml-1 text-primary"><Copy className="h-3 w-3" /></button>
+              </p>
+              <p className="mt-1 flex items-center gap-1 text-sm text-muted-foreground">
+                {user.gender === "female" ? <Venus className="h-3 w-3 text-pink-500" /> : <Mars className="h-3 w-3 text-blue-500" />}
+                {user.gender === "female" ? "女" : "男"}
+              </p>
+              <p className="mt-1 flex items-center gap-1 text-sm text-muted-foreground">
+                <Globe className="h-3 w-3" /> {user.region || "北京"}
               </p>
             </div>
           </div>
@@ -60,12 +81,20 @@ export default function UserProfile() {
           <Separator className="my-4" />
 
           <div className="space-y-6">
-            <div className="flex cursor-pointer items-center justify-between hover:opacity-70">
+            <div className="flex cursor-pointer items-center justify-between hover:opacity-70" onClick={() => {
+              const s = sessions.find((s) => s.type === "single" && s.targetId === id)
+              if (s) navigate(`/chat/settings/${s.id}`)
+              else window.alert("请先添加为好友")
+            }}>
               <span className="font-medium">设置备注和标签</span>
               <ChevronLeft className="h-4 w-4 rotate-180 text-muted-foreground" />
             </div>
 
-            <div className="flex cursor-pointer items-center justify-between hover:opacity-70">
+            <div className="flex cursor-pointer items-center justify-between hover:opacity-70" onClick={() => {
+              const s = sessions.find((s) => s.type === "single" && s.targetId === id)
+              if (s) navigate(`/chat/settings/${s.id}`)
+              else window.alert("请先添加为好友")
+            }}>
               <span className="font-medium">朋友权限</span>
               <ChevronLeft className="h-4 w-4 rotate-180 text-muted-foreground" />
             </div>
@@ -100,10 +129,16 @@ export default function UserProfile() {
               <MessageSquare className="h-5 w-5" />
               发消息
             </Button>
-            <Button variant="secondary" className="w-full gap-2 font-medium" size="lg">
+            <Button variant="secondary" className="w-full gap-2 font-medium" size="lg" onClick={() => navigate(`/chat/${id}?action=call`)}>
               <Phone className="h-5 w-5" />
               音视频通话
             </Button>
+            {!isFriend && id !== currentUser?.id && (
+              <Button variant="outline" className="w-full gap-2 font-medium" size="lg" onClick={handleAddFriend}>
+                <UserPlus className="h-5 w-5" />
+                添加到通讯录
+              </Button>
+            )}
           </div>
         </div>
       </div>

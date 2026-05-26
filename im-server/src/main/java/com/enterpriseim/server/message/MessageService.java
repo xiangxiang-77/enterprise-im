@@ -36,6 +36,8 @@ public class MessageService {
         val to = required(message.to(), "to");
         val conversationId = required(message.conversationId(), "conversationId");
         val content = message.payload() == null ? "" : message.payload().path("content").asText("");
+        val type = message.payload() == null ? "text" : valueOr(message.payload().path("messageType").asText("text"), "text");
+        val fileId = message.payload() == null ? null : emptyToNull(message.payload().path("fileId").asText(null));
         val messageId = "m_" + UUID.randomUUID();
 
         userService.ensureUser(from, from, null);
@@ -44,15 +46,15 @@ public class MessageService {
         ensureConversationMember(conversationId, from);
         ensureConversationMember(conversationId, to);
 
-        jdbcTemplate.update("INSERT INTO messages(id, conversation_id, sender_id, type, content, status, client_seq)\n" +
-                "VALUES (?, ?, ?, 'text', ?, 'sent', ?)\n", messageId, conversationId, from, content, message.requestId());
+        jdbcTemplate.update("INSERT INTO messages(id, conversation_id, sender_id, type, content, file_id, status, client_seq)\n" +
+                "VALUES (?, ?, ?, ?, ?, ?, 'sent', ?)\n", messageId, conversationId, from, type, content, fileId, message.requestId());
 
         return new PersistedMessage(messageId, conversationId, from, to, content);
     }
 
     public List<MessageItem> listMessages(String conversationId, int limit) {
         val boundedLimit = Math.max(1, Math.min(limit, 100));
-        return jdbcTemplate.query("SELECT id, conversation_id, sender_id, type, content, status, client_seq, created_at\n" +
+        return jdbcTemplate.query("SELECT id, conversation_id, sender_id, type, content, file_id, status, client_seq, created_at, edited_at, recalled_at, expire_after_read, destroyed_at\n" +
                 "FROM messages\n" +
                 "WHERE conversation_id = ?\n" +
                 "ORDER BY created_at ASC, id ASC\n" +
@@ -62,9 +64,14 @@ public class MessageService {
                 rs.getString("sender_id"),
                 rs.getString("type"),
                 rs.getString("content"),
+                rs.getString("file_id"),
                 rs.getString("status"),
                 rs.getString("client_seq"),
-                toInstant(rs.getTimestamp("created_at"))
+                toInstant(rs.getTimestamp("created_at")),
+                toInstant(rs.getTimestamp("edited_at")),
+                toInstant(rs.getTimestamp("recalled_at")),
+                rs.getBoolean("expire_after_read"),
+                toInstant(rs.getTimestamp("destroyed_at"))
         ), conversationId, boundedLimit);
     }
 
@@ -94,6 +101,14 @@ public class MessageService {
         return value;
     }
 
+    private String valueOr(String value, String fallback) {
+        return value == null || value.trim().isEmpty() ? fallback : value.trim();
+    }
+
+    private String emptyToNull(String value) {
+        return value == null || value.trim().isEmpty() ? null : value.trim();
+    }
+
     @JsonAutoDetect(fieldVisibility = JsonAutoDetect.Visibility.ANY)
 @Getter
 @Setter
@@ -120,9 +135,14 @@ public static class MessageItem {
     private String senderId;
     private String type;
     private String content;
+    private String fileId;
     private String status;
     private String clientSeq;
     private Instant createdAt;
+    private Instant editedAt;
+    private Instant recalledAt;
+    private boolean expireAfterRead;
+    private Instant destroyedAt;
 }
 
     private Instant toInstant(Timestamp timestamp) {

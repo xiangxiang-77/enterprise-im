@@ -4,6 +4,8 @@ import lombok.val;
 
 import com.enterpriseim.server.api.ApiResponse;
 import com.enterpriseim.server.auth.UserAuthService;
+import com.enterpriseim.server.config.ImProperties;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -12,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 
@@ -20,10 +23,12 @@ import java.util.List;
 public class CallController {
     private final CallService callService;
     private final UserAuthService userAuthService;
+    private final ImProperties properties;
 
-    public CallController(CallService callService, UserAuthService userAuthService) {
+    public CallController(CallService callService, UserAuthService userAuthService, ImProperties properties) {
         this.callService = callService;
         this.userAuthService = userAuthService;
+        this.properties = properties;
     }
 
     @GetMapping("/config")
@@ -84,6 +89,7 @@ public class CallController {
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @PathVariable String callId
     ) {
+        requireDemoCallEndpointsEnabled();
         val actorId = userAuthService.requireUser(authorization);
         val current = callService.get(callId);
         userAuthService.requireSameUser(actorId, current.callerId());
@@ -95,6 +101,7 @@ public class CallController {
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @PathVariable String callId
     ) {
+        requireDemoCallEndpointsEnabled();
         val actorId = userAuthService.requireUser(authorization);
         val current = callService.get(callId);
         userAuthService.requireSameUser(actorId, current.callerId());
@@ -119,5 +126,11 @@ public class CallController {
     ) {
         userAuthService.requireSameUser(userAuthService.requireUser(authorization), userId);
         return ApiResponse.ok(callService.listByUser(userId, limit));
+    }
+
+    private void requireDemoCallEndpointsEnabled() {
+        if (!properties.getAuth().isDemoCallEndpointsEnabled()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "演示通话端点已禁用");
+        }
     }
 }

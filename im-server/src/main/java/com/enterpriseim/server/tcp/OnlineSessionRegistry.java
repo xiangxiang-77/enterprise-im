@@ -37,5 +37,18 @@ public class OnlineSessionRegistry {
     public int onlineCount() {
         return userChannels.size();
     }
+
+    public boolean isOnline(String userId) {
+        Channel ch = userChannels.get(userId);
+        return ch != null && ch.isActive();
+    }
+
+    public boolean disconnect(String userId) {
+        Channel ch = userChannels.remove(userId);
+        if (ch == null) return false;
+        channelUsers.remove(ch);
+        ch.close();
+        return true;
+    }
 }
 

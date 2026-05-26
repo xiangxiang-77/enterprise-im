@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react"
-import { useParams, useNavigate } from "react-router-dom"
-import { ChevronLeft, MoreHorizontal, Phone, Video, Trash2, Forward, Star, X, Share2 } from "lucide-react"
+    import { useEffect, useRef, useState } from "react"
+import { useParams, useNavigate, useSearchParams } from "react-router-dom"
+import { format } from "date-fns"
+import { ChevronLeft, ChevronDown, MoreHorizontal, Phone, Video, Trash2, Forward, Star, X, Share2, Megaphone, AtSign } from "lucide-react"
 import { useChatStore } from "@/stores/useChatStore"
 import { useAuthStore } from "@/stores/useAuthStore"
 import { Button } from "@/components/ui/button"
@@ -16,14 +17,24 @@ import {
   type CallConfig,
   type CallRecord,
   answerCallApi,
-  demoAnswerCallApi,
-  demoRejectCallApi,
+  createFileTransferApi,
+  editMessageApi,
+  favoriteMessageApi,
   fetchCallConfigApi,
   fetchCallHistoryApi,
   fetchConversationMessagesApi,
+  fetchMessageReadStatusApi,
+  forwardMessagesApi,
   hangupCallApi,
   initiateCallApi,
+  reactMessageApi,
+  recallMessageApi,
+  readMessageApi,
   rejectCallApi,
+  screenshotConversationApi,
+  sendConversationMessageApi,
+  uploadFileApi,
+  fetchOnlineStatusApi,
 } from "@/services/api"
 import type { Message, User, Group, Session } from "@/types"
 
@@ -54,6 +65,8 @@ function mediaTypeLabel(type?: string) {
 export default function ChatRoom() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const targetMessageId = searchParams.get("messageId")
   const { 
     sessions, 
     messages, 
@@ -94,6 +107,10 @@ export default function ChatRoom() {
   
   const [readStatusOpen, setReadStatusOpen] = useState(false)
   const [readStatusUsers, setReadStatusUsers] = useState<User[]>([])
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const [callDialogOpen, setCallDialogOpen] = useState(false)
   const [callRecord, setCallRecord] = useState<CallRecord | null>(null)
   const [callConfig, setCallConfig] = useState<CallConfig | null>(null)
@@ -343,9 +360,10 @@ export default function ChatRoom() {
       setCallLoading(true)
       setCallError("")
       try {
-        const answered = isOutgoingCall
-          ? await demoAnswerCallApi(callRecord.id, token ?? undefined)
-          : await answerCallApi(callRecord.id, currentUser.id, token ?? undefined)
+        if (isOutgoingCall) {
+          throw new Error("Waiting for peer device to answer")
+        }
+        const answered = await answerCallApi(callRecord.id, currentUser.id, token ?? undefined)
         setCallRecord(answered)
         const pendingOffer = pendingOfferRef.current
         if (!isOutgoingCall && pendingOffer?.callId === answered.id) {
@@ -378,9 +396,10 @@ export default function ChatRoom() {
       setCallLoading(true)
       setCallError("")
       try {
-        const rejected = isOutgoingCall
-          ? await demoRejectCallApi(callRecord.id, token ?? undefined)
-          : await rejectCallApi(callRecord.id, currentUser.id, token ?? undefined)
+        if (isOutgoingCall) {
+          throw new Error("Waiting for peer device to reject or hang up")
+        }
+        const rejected = await rejectCallApi(callRecord.id, currentUser.id, token ?? undefined)
         setCallRecord(rejected)
         stopWebRtcCall("已拒绝")
         void refreshCallHistory()
@@ -600,6 +619,16 @@ export default function ChatRoom() {
         }
         return
       }
+      if (socketMessage.type === "TYPING_DELIVER") {
+        const from = socketMessage.from
+        const convId = socketMessage.conversationId
+        const isTyping = socketMessage.payload?.isTyping === true
+        if (from && convId) {
+          const sender = users[from]
+          setTyping(convId, from, sender?.name || from, isTyping)
+        }
+        return
+      }
       if (socketMessage.type !== "TEXT_DELIVER") return
       if (!socketMessage.conversationId || socketMessage.conversationId !== id) return
       const content = typeof socketMessage.payload?.content === "string" ? socketMessage.payload.content : ""
@@ -622,6 +651,27 @@ export default function ChatRoom() {
       void refreshCallHistory()
     }
   }, [callDialogOpen, currentUser.id, token])
+
+  useEffect(() => {
+    if (!token || !id || session?.type !== 'group') return
+    const group = groups[session.targetId]
+    if (!group?.members?.length) return
+
+    const pollOnline = () => {
+      fetchOnlineStatusApi(group.members, token)
+        .then(statusMap => {
+          const store = useChatStore.getState()
+          group.members.forEach((uid: string) => {
+            const current = store.users[uid]
+            store.addUser({ ...(current || { id: uid, name: uid, avatar: '', status: 'offline', isFriend: false }), status: statusMap[uid] ? 'online' : 'offline' })
+          })
+        })
+        .catch(() => {})
+    }
+    pollOnline()
+    const interval = setInterval(pollOnline, 30000)
+    return () => clearInterval(interval)
+  }, [token, id, session?.targetId, session?.type, groups])
 
   const mentionUsers = session?.type === 'group' && groups[session.targetId]
       ? groups[session.targetId].members.map(uid => Object.values(users).find(u => u.id === uid)).filter(Boolean) as User[]
@@ -654,15 +704,49 @@ export default function ChatRoom() {
   }, [id, token, setMessages, currentUser.id])
 
   useEffect(() => {
-    // Scroll to bottom logic would go here
-    // In a real app, use a ref to scroll
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+    setShowScrollToBottom(false)
   }, [sessionMessages])
+
+  const handleScroll = () => {
+    const container = scrollContainerRef.current
+    if (!container) return
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+    setShowScrollToBottom(distanceFromBottom > 100)
+  }
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+    setShowScrollToBottom(false)
+  }
+
+  useEffect(() => {
+    if (!targetMessageId) return
+    const timer = window.setTimeout(() => {
+      const target = messageRefs.current[targetMessageId]
+        || Object.entries(messageRefs.current).find(([key]) => key.endsWith(`:${targetMessageId}`))?.[1]
+      target?.scrollIntoView({ behavior: "smooth", block: "center" })
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [targetMessageId, sessionMessages.length])
+
+  useEffect(() => {
+    if (!token || !currentUser.id) return
+    sessionMessages
+      .filter((message) => message.serverId && message.senderId !== currentUser.id && message.status !== "read")
+      .slice(-10)
+      .forEach((message) => {
+        void readMessageApi(message.serverId!, token).then(() => {
+          if (id) markMessageAsRead(id, message.id, currentUser.id)
+        }).catch(() => undefined)
+      })
+  }, [currentUser.id, id, markMessageAsRead, sessionMessages, token])
 
   if (!session) {
     return <div className="flex h-full items-center justify-center">未找到会话</div>
   }
 
-  const handleSendMessage = (content: string, type: "text" | "image" | "file" | "voice" | "card", extra?: any) => {
+  const handleSendMessage = async (content: string, type: "text" | "image" | "file" | "voice" | "card" | "location", extra?: any) => {
       if (!id) return
       
       setDraft(id, "") // Clear draft
@@ -695,8 +779,41 @@ export default function ChatRoom() {
       if (isRealTextSend) {
         return
       }
-      
-      updateMessage(id, newMessage.id, { status: "failed" })
+
+      if (!token || !currentUser.id) {
+        updateMessage(id, newMessage.id, { status: "failed" })
+        return
+      }
+
+      try {
+        let fileId = extra?.fileId as string | undefined
+        if ((type === "file" || type === "image" || type === "voice") && extra?.rawFile instanceof File) {
+          const file = extra.rawFile as File
+          const created = await uploadFileApi(currentUser.id, file, token)
+          fileId = created.id
+          updateMessage(id, newMessage.id, { fileId, fileUrl: created.previewUrl || created.downloadUrl || extra?.fileUrl, status: "sending" } as Partial<Message>)
+          await createFileTransferApi(fileId, { direction: "upload", progress: 100, status: "completed" }, token)
+        }
+
+        const saved = await sendConversationMessageApi(id, {
+          senderId: currentUser.id,
+          type: type as Message["type"],
+          content,
+          fileId,
+          clientSeq: messageId,
+          conversationType: session.type,
+          targetId: session.targetId,
+          expireAfterRead: Boolean(extra?.isReadAfterBurn),
+        }, token)
+        updateMessage(id, newMessage.id, {
+          status: "sent",
+          serverId: saved.serverId,
+          fileId: saved.fileId || fileId,
+          isReadAfterBurn: saved.isReadAfterBurn || Boolean(extra?.isReadAfterBurn),
+        } as Partial<Message>)
+      } catch (err) {
+        updateMessage(id, newMessage.id, { status: "failed" })
+      }
   }
 
   const handlePreviewImage = (url: string) => {
@@ -732,8 +849,18 @@ export default function ChatRoom() {
     deleteMessage(id, msgId)
   }
 
-  const handleRecallMessage = (msgId: string) => {
+  const handleRecallMessage = async (msgId: string) => {
      if (!id) return
+     const message = sessionMessages.find((item) => item.id === msgId)
+     if (token && message?.serverId) {
+       try {
+         const saved = await recallMessageApi(message.serverId, "user_recall", token)
+         updateMessage(id, msgId, { ...saved, id: msgId })
+       } catch {
+         updateMessage(id, msgId, { status: "failed" })
+       }
+       return
+     }
      recallMessage(id, msgId)
   }
 
@@ -752,6 +879,25 @@ export default function ChatRoom() {
   const handleForwardConfirm = (targets: (User | Group)[]) => {
     if (!id || forwardingMessageIds.length === 0) return
     const targetIds = targets.map(t => t.id)
+    if (forwardingMessageIds.length > 100) {
+      setSelectedMessageIds(new Set(Array.from(selectedMessageIds).slice(0, 100)))
+      return
+    }
+    const serverMessageIds = forwardingMessageIds
+      .map((messageId) => sessionMessages.find((item) => item.id === messageId)?.serverId)
+      .filter(Boolean) as string[]
+    if (token && serverMessageIds.length === forwardingMessageIds.length) {
+      void forwardMessagesApi(serverMessageIds, targetIds, forwardingMode, token)
+        .then(() => forwardMessages(id, forwardingMessageIds, targetIds, forwardingMode))
+        .catch(() => undefined)
+        .finally(() => {
+          setForwardDialogOpen(false)
+          setForwardingMessageIds([])
+          setIsMultiSelectMode(false)
+          setSelectedMessageIds(new Set())
+        })
+      return
+    }
     forwardMessages(id, forwardingMessageIds, targetIds, forwardingMode)
     setForwardDialogOpen(false)
     setForwardingMessageIds([])
@@ -759,7 +905,7 @@ export default function ChatRoom() {
     setSelectedMessageIds(new Set())
   }
 
-  const handleScreenshot = () => {
+  const handleScreenshot = async () => {
     if (!id) return
     const newMessage: Message = {
         id: Date.now().toString(),
@@ -774,15 +920,70 @@ export default function ChatRoom() {
     if (session.isScreenshotNotificationEnabled !== false) {
        addMessage(id, newMessage)
     }
+    if (token) {
+      await screenshotConversationApi(id, token).catch(() => undefined)
+    }
+  }
+
+  const handleFavoriteMessage = async (message: Message) => {
+    addFavorite(message)
+    if (token && message.serverId) {
+      await favoriteMessageApi(message.serverId, token).catch(() => undefined)
+    }
   }
 
   const handleFavoriteMessages = () => {
-    selectedMessageIds.forEach(id => {
-      const msg = sessionMessages.find(m => m.id === id)
+    selectedMessageIds.forEach(messageId => {
+      const msg = sessionMessages.find(m => m.id === messageId)
       if (msg) addFavorite(msg)
+      if (msg?.serverId && token) void favoriteMessageApi(msg.serverId, token).catch(() => undefined)
     })
     setIsMultiSelectMode(false)
     setSelectedMessageIds(new Set())
+  }
+
+  const handleLikeMessage = async (message: Message) => {
+    if (!id) return
+    toggleLikeMessage(id, message.id, currentUser.id)
+    if (token && message.serverId) {
+      await reactMessageApi(message.serverId, "like", token).catch(() => undefined)
+    }
+  }
+
+  const handleEditMessage = async (messageId: string, content: string) => {
+    if (!id) return
+    const message = sessionMessages.find((item) => item.id === messageId)
+    if (token && message?.serverId) {
+      try {
+        const saved = await editMessageApi(message.serverId, content, token)
+        updateMessage(id, messageId, { content: saved.content, isEdited: true, serverId: saved.serverId })
+        setEditingMessage(null)
+      } catch {
+        updateMessage(id, messageId, { status: "failed" })
+      }
+      return
+    }
+    editMessage(id, messageId, content)
+    setEditingMessage(null)
+  }
+
+  const handleFileTransferProgress = async (message: Message, progress: number, status: string) => {
+    if (!token || !message.fileId) return
+    await createFileTransferApi(message.fileId, { direction: "download", progress, status }, token).catch(() => undefined)
+  }
+
+  const handleServerReadStatusClick = async (message: Message) => {
+    if (token && message.serverId) {
+      const status = await fetchMessageReadStatusApi(message.serverId, token).catch(() => undefined)
+      const members = status ? [...status.read, ...status.unread] : []
+      setReadStatusUsers(members.map((member) => {
+        const known = Object.values(users).find((item) => item.id === member.userId)
+        return known || { id: member.userId, name: member.userName || member.userId, avatar: "", status: "offline" as const }
+      }))
+    } else {
+      handleReadStatusClick(message.readBy || [])
+    }
+    setReadStatusOpen(true)
   }
 
   return (
@@ -851,59 +1052,127 @@ export default function ChatRoom() {
       </header>
 
       {/* Messages */}
-      <ScrollArea className="flex-1 p-4">
+      <div className="flex-1 overflow-y-auto p-4" ref={scrollContainerRef} onScroll={handleScroll}>
         <div className="flex flex-col gap-4 pb-4">
+          <div ref={messagesEndRef} />
           <div className="flex justify-center mb-2">
             <Button variant="ghost" size="sm" onClick={handleLoadMore} className="text-xs text-muted-foreground">
               查看更多历史消息
             </Button>
           </div>
-          {sessionMessages.map((message) => {
-            const isMe = message.senderId === currentUser.id
-            const senderUser = Object.values(users).find(u => u.id === message.senderId)
-            let sender = isMe ? currentUser : senderUser
 
-            // Handle Group Alias
-            if (!isMe && session.type === 'group' && senderUser && groups[session.targetId]) {
-                const alias = groups[session.targetId].memberAliases?.[message.senderId]
-                if (alias) {
-                    sender = { ...senderUser, name: alias }
+          {session.type === 'group' && groups[session.targetId]?.notice && (
+            <div className="mb-4 flex items-start gap-3 rounded-lg border bg-amber-50 p-3 dark:bg-amber-950/30">
+              <Megaphone className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">群公告</p>
+                <p className="mt-0.5 text-sm text-amber-800 dark:text-amber-300">{groups[session.targetId].notice}</p>
+              </div>
+            </div>
+          )}
+          {(() => {
+            // Group consecutive image messages from the same sender into grids
+            const rendered: React.ReactNode[] = []
+            let i = 0
+            while (i < sessionMessages.length) {
+              const message = sessionMessages[i]
+              const isMe = message.senderId === currentUser.id
+
+              // Check for consecutive images from same sender
+              if (message.type === "image" && message.fileUrl) {
+                const group: Message[] = [message]
+                let j = i + 1
+                while (j < sessionMessages.length && sessionMessages[j].type === "image" && sessionMessages[j].senderId === message.senderId && sessionMessages[j].fileUrl && group.length < 9) {
+                  group.push(sessionMessages[j])
+                  j++
                 }
-            }
 
-            const quotedMessage = message.quoteId ? sessionMessages.find(m => m.id === message.quoteId) : undefined
-            
-            return (
-              <MessageBubble
-                key={message.id}
-                message={message}
-                isMe={isMe}
-                isGroup={session.type === 'group'}
-                sender={sender}
-                quotedMessage={quotedMessage}
-                onPreviewImage={handlePreviewImage}
-                isMultiSelectMode={isMultiSelectMode}
-                isSelected={selectedMessageIds.has(message.id)}
-                onSelect={() => toggleSelectMessage(message.id, !selectedMessageIds.has(message.id))}
-                onDelete={() => handleDeleteSingleMessage(message.id)}
-                onRecall={() => handleRecallMessage(message.id)}
-                onReply={() => setReplyingTo(message)}
-                onEdit={() => setEditingMessage(message)}
-                onAvatarClick={(userId) => navigate(`/contact/profile/${userId}`)}
-                onForward={() => handleSingleForward(message.id)}
-                onFavorite={() => addFavorite(message)}
-                onLike={() => toggleLikeMessage(session.id, message.id, currentUser.id)}
-                onReadStatusClick={() => handleReadStatusClick(message.readBy || [])}
-                onResend={() => id && resendMessage(id, message.id)}
-                onEnterMultiSelect={() => {
-                  setIsMultiSelectMode(true)
-                  toggleSelectMessage(message.id, true)
-                }}
-              />
-            )
-          })}
+                if (group.length >= 2) {
+                  // Render as image grid
+                  const senderUser = Object.values(users).find(u => u.id === message.senderId)
+                  let sender = isMe ? currentUser : senderUser
+                  if (!isMe && session.type === 'group' && senderUser && groups[session.targetId]) {
+                    const alias = groups[session.targetId].memberAliases?.[message.senderId]
+                    if (alias) sender = { ...senderUser, name: alias }
+                  }
+
+                  const gridCols = group.length <= 4 ? 2 : 3
+                  rendered.push(
+                    <div key={`img-grid-${message.id}`} className={`group relative mb-4 flex w-full gap-2 ${isMe ? "flex-row-reverse" : "flex-row"}`}>
+                      <Avatar className="h-9 w-9 shrink-0 cursor-pointer" onClick={() => sender?.id && navigate(`/contact/profile/${sender.id}`)}>
+                        <AvatarImage src={sender?.avatar} />
+                        <AvatarFallback>{sender?.name?.slice(0, 2)}</AvatarFallback>
+                      </Avatar>
+                      <div className={`flex max-w-[70%] flex-col ${isMe ? "items-end" : "items-start"}`}>
+                        {!isMe && session.type === 'group' && <span className="mb-1 ml-1 text-xs text-muted-foreground">{sender?.name}</span>}
+                        <div className={`grid gap-1 rounded-2xl p-1 ${isMe ? "bg-primary" : "border bg-white dark:bg-muted"}`} style={{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }}>
+                          {group.map((img) => (
+                            <div key={img.id} className="cursor-pointer overflow-hidden rounded-lg" onClick={() => handlePreviewImage(img.fileUrl!)}>
+                              <img src={img.fileUrl} alt="图片" className="h-24 w-24 object-cover" loading="lazy" />
+                            </div>
+                          ))}
+                        </div>
+                        <span className="mt-1 text-[10px] text-muted-foreground">{format(group[0].timestamp, "HH:mm")}</span>
+                      </div>
+                    </div>
+                  )
+                  i = j
+                  continue
+                }
+              }
+
+              // Regular message rendering
+              const senderUser = Object.values(users).find(u => u.id === message.senderId)
+              let sender = isMe ? currentUser : senderUser
+              if (!isMe && session.type === 'group' && senderUser && groups[session.targetId]) {
+                  const alias = groups[session.targetId].memberAliases?.[message.senderId]
+                  if (alias) sender = { ...senderUser, name: alias }
+              }
+              const quotedMessage = message.quoteId ? sessionMessages.find(m => m.id === message.quoteId) : undefined
+
+              rendered.push(
+                <div
+                  key={message.id}
+                  ref={(node) => {
+                    messageRefs.current[message.id] = node
+                    if (message.serverId) messageRefs.current[`${message.id}:${message.serverId}`] = node
+                  }}
+                  className={targetMessageId && (targetMessageId === message.id || targetMessageId === message.serverId) ? "rounded-md ring-2 ring-primary/50" : undefined}
+                >
+                  <MessageBubble
+                    message={message}
+                    isMe={isMe}
+                    isGroup={session.type === 'group'}
+                    sender={sender}
+                    quotedMessage={quotedMessage}
+                    onPreviewImage={handlePreviewImage}
+                    isMultiSelectMode={isMultiSelectMode}
+                    isSelected={selectedMessageIds.has(message.id)}
+                    onSelect={() => toggleSelectMessage(message.id, !selectedMessageIds.has(message.id))}
+                    onDelete={() => handleDeleteSingleMessage(message.id)}
+                    onRecall={() => handleRecallMessage(message.id)}
+                    onReply={() => setReplyingTo(message)}
+                    onEdit={() => setEditingMessage(message)}
+                    onAvatarClick={(userId) => navigate(`/contact/profile/${userId}`)}
+                    onForward={() => handleSingleForward(message.id)}
+                    onFavorite={() => void handleFavoriteMessage(message)}
+                    onLike={() => void handleLikeMessage(message)}
+                    onReadStatusClick={() => void handleServerReadStatusClick(message)}
+                    onFileTransferProgress={(progress, status) => void handleFileTransferProgress(message, progress, status)}
+                    onResend={() => id && resendMessage(id, message.id)}
+                    onEnterMultiSelect={() => {
+                      setIsMultiSelectMode(true)
+                      toggleSelectMessage(message.id, true)
+                    }}
+                  />
+                </div>
+              )
+              i++
+            }
+            return rendered
+          })()}
         </div>
-      </ScrollArea>
+      </div>
 
       {/* Input or Multi-select Actions */}
       {isMultiSelectMode ? (
@@ -931,18 +1200,21 @@ export default function ChatRoom() {
           replyingTo={replyingTo}
           onCancelReply={() => setReplyingTo(null)}
           editingMessage={editingMessage}
-          onUpdateMessage={(msgId, content) => {
-              if (id) {
-                editMessage(id, msgId, content)
-                setEditingMessage(null)
-              }
-          }}
+          onUpdateMessage={(msgId, content) => void handleEditMessage(msgId, content)}
           onCancelEdit={() => setEditingMessage(null)}
           mentionUsers={mentionUsers}
-          onTyping={(isTyping) => id && setTyping(id, currentUser.id, currentUser.name, isTyping)}
+          onTyping={(isTyping) => {
+            if (!id) return
+            setTyping(id, currentUser.id, currentUser.name, isTyping)
+            if (token && currentUser.id && session?.targetId) {
+              imSocket.connect(token, currentUser.id)
+              imSocket.sendTyping({ to: session.targetId, conversationId: id, isTyping })
+            }
+          }}
           defaultMessage={session?.draft}
           onMessageChange={(draft) => id && setDraft(id, draft)}
           onScreenshot={handleScreenshot}
+          isGroup={session.type === 'group'}
         />
       )}
 
@@ -986,9 +1258,6 @@ export default function ChatRoom() {
             <div className="rounded-md bg-blue-50 px-3 py-2 text-sm text-blue-800">
               当前已接入浏览器 WebRTC：语音用麦克风，视频用摄像头。需要两个登录用户、两个浏览器窗口互相呼叫。
             </div>
-            <div className="hidden">
-              当前演示的是通话信令：发起、接听、拒绝、挂断、后端记录。不是浏览器真实麦克风通话。
-            </div>
             <div className="space-y-2 rounded-md border p-3 text-sm">
               <div className="flex justify-between gap-3">
                 <span className="text-muted-foreground">媒体连接</span>
@@ -1027,7 +1296,7 @@ export default function ChatRoom() {
             </div>
             {isOutgoingCall && callRecord?.status === "ringing" && (
               <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                你是发起方。演示时请点“模拟对方接听”或“模拟对方拒绝”，系统会用对方身份完成状态流转。
+                等待对方设备接听或拒绝。生产模式不允许发起方代替对方操作。
               </div>
             )}
             {callLoading && <p className="text-sm text-muted-foreground">正在创建通话...</p>}
@@ -1096,10 +1365,10 @@ export default function ChatRoom() {
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setCallDialogOpen(false)}>关闭</Button>
               <Button variant="outline" onClick={handleAnswerCall} disabled={callLoading || isOutgoingCall || !callRecord || callRecord.status !== "ringing"}>
-                {isOutgoingCall ? "模拟对方接听" : "接听"}
+                接听
               </Button>
               <Button variant="outline" onClick={handleRejectCall} disabled={callLoading || isOutgoingCall || !callRecord || callRecord.status !== "ringing"}>
-                {isOutgoingCall ? "模拟对方拒绝" : "拒绝"}
+                拒绝
               </Button>
               <Button variant="destructive" onClick={handleHangupCall} disabled={callLoading || !callRecord || callRecord.status === "ended"}>
                 挂断

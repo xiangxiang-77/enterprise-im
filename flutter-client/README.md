@@ -31,7 +31,7 @@ Local package command: `scripts/package-flutter.ps1`.
 - Host: `127.0.0.1`
 - HTTP port: `18080` for Docker Compose, or `8080` for direct local server.
 - TCP port: `19090` for Docker Compose, or `9000` for direct local server.
-- Token format: `demo-token-<userId>`
+- Token format: login returns a signed JWT. Legacy `demo-token-<userId>` is test-only and must be explicitly enabled on the server.
 - Frame ending: newline `\n`
 
 ## PJSIP Native Runtime

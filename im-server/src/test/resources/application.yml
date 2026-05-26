@@ -4,3 +4,8 @@ logging:
     com.enterpriseim.server: INFO
     org.springframework: WARN
     org.flywaydb: WARN
+
+im:
+  auth:
+    accept-demo-tokens: true
+    demo-call-endpoints-enabled: true

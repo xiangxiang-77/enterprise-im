@@ -6,6 +6,7 @@ import Workspace from "./pages/workspace/Workspace"
 import Me from "./pages/me/Me"
 import Login from "./pages/auth/Login"
 import Startup from "./pages/auth/Startup"
+import Onboarding from "./pages/auth/Onboarding"
 import ChatRoom from "./pages/chat/ChatRoom"
 import ChatSettings from "./pages/chat/ChatSettings"
 import NewFriends from "./pages/contact/NewFriends"
@@ -16,7 +17,10 @@ import GlobalSearch from "./pages/search/GlobalSearch"
 import FileManager from "./pages/file/FileManager"
 import GroupList from "./pages/contact/GroupList"
 import Favorites from "./pages/me/Favorites"
+import Blacklist from "./pages/contact/Blacklist"
 import AdminDashboard from "./pages/admin/AdminDashboard"
+import AdminAdvanced from "./pages/admin/AdminAdvanced"
+import DepartmentDetail from "./pages/admin/DepartmentDetail"
 
 export const router = createBrowserRouter([
   {
@@ -42,6 +46,10 @@ export const router = createBrowserRouter([
     ],
   },
   {
+    path: "/auth/onboarding",
+    element: <Onboarding />,
+  },
+  {
     path: "/auth/login",
     element: <Login />,
   },
@@ -64,6 +72,10 @@ export const router = createBrowserRouter([
   {
     path: "/contact/groups",
     element: <GroupList />,
+  },
+  {
+    path: "/contact/blacklist",
+    element: <Blacklist />,
   },
   {
     path: "/contact/profile/:id",
@@ -92,5 +104,13 @@ export const router = createBrowserRouter([
   {
     path: "/admin",
     element: <AdminDashboard />,
+  },
+  {
+    path: "/admin/advanced",
+    element: <AdminAdvanced />,
+  },
+  {
+    path: "/admin/department/:id",
+    element: <DepartmentDetail />,
   },
 ])

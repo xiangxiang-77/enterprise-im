@@ -21,6 +21,10 @@ win32-msvc* {
     QMAKE_CFLAGS += /utf-8
 }
 
+win32 {
+    LIBS += -lwinmm -lole32
+}
+
 TARGET = EnterpriseIMQtClient
 TEMPLATE = app
 

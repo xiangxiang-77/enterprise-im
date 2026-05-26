@@ -1,5 +1,6 @@
 param(
     [switch]$SkipSipLoop,
+    [switch]$SkipAudioContent,
     [switch]$SkipTurn
 )
 
@@ -32,6 +33,10 @@ if (-not $SkipSipLoop) {
     Invoke-Step "SIP audio media loop" "scripts\verify-sip-media-loop.ps1"
 }
 
+if (-not $SkipAudioContent) {
+    Invoke-Step "SIP audio content proof" "scripts\verify-sip-audio-content.ps1"
+}
+
 Write-Host ""
 Write-Host "PASS final media preflight" -ForegroundColor Green
-Write-Host "Remaining acceptance needs real Qt/Android devices only: microphone, speaker, camera preview/render, and cross-network TURN behavior."
+Write-Host "Remaining acceptance needs real Qt/Android devices only: physical microphone/speaker hearing, camera preview/render, and cross-network TURN behavior."

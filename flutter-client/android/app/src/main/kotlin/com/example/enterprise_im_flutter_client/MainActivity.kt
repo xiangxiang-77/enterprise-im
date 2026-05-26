@@ -35,6 +35,7 @@ import org.pjsip.pjsua2.CallMediaInfo
 import org.pjsip.pjsua2.CallOpParam
 import org.pjsip.pjsua2.Endpoint
 import org.pjsip.pjsua2.EpConfig
+import org.pjsip.pjsua2.OnCallMediaEventParam
 import org.pjsip.pjsua2.OnCallMediaStateParam
 import org.pjsip.pjsua2.OnCallStateParam
 import org.pjsip.pjsua2.OnIncomingCallParam
@@ -42,7 +43,7 @@ import org.pjsip.pjsua2.OnRegStateParam
 import org.pjsip.pjsua2.TransportConfig
 import org.pjsip.pjsua2.VideoWindow
 import org.pjsip.pjsua2.VideoWindowHandle
-import org.pjsip.pjsua2.WindowHandle
+import org.pjsip.pjsua2.pjmedia_event_type
 import org.pjsip.pjsua2.pjmedia_type
 import org.pjsip.pjsua2.pjsip_status_code
 import org.pjsip.pjsua2.pjsip_transport_type_e
@@ -66,8 +67,9 @@ class MainActivity : FlutterActivity() {
     private var pjsipEndpoint: Endpoint? = null
     private var pjsipAccount: NativeAccount? = null
     private var pjsipCall: NativeCall? = null
-    private var remoteVideoSurface: Surface? = null
+    private var remoteVideoHolder: SurfaceHolder? = null
     private var remoteVideoWindow: VideoWindow? = null
+    private var remoteVideoAttached = false
     private val pjsipLock = Any()
     private val nativePjsipAvailable: Boolean by lazy { loadNativePjsip() }
 
@@ -79,7 +81,7 @@ class MainActivity : FlutterActivity() {
             previousHandler?.uncaughtException(thread, throwable)
         }
         appendNativeLog("APP onCreate")
-        appendNativeLog("APP native build v13 pjsip-stability")
+        appendNativeLog("APP native build v19 pjsip-video-fmt-change-bind")
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -105,20 +107,51 @@ class MainActivity : FlutterActivity() {
                         result.error("invalid_config", "callId, sipRegistrar, and sipUsername are required", null)
                         return@setMethodCallHandler
                     }
-                    val startResult = startSipCall(callId, registrar, username, password, calleeUri, mediaType, outbound)
-                    if (startResult["status"] == "error") {
-                        result.error(startResult["code"]?.toString() ?: "sip_error", startResult["message"]?.toString(), startResult)
-                    } else {
-                        result.success(startResult)
+                    runSipResultTask("start", result) {
+                        startSipCall(callId, registrar, username, password, calleeUri, mediaType, outbound)
                     }
                 }
                 "stop" -> {
                     appendNativeLog("STOP requested activeCallId=$activeCallId")
-                    result.success(stopSipCall())
+                    runSipResultTask("stop", result) {
+                        stopSipCall()
+                    }
                 }
                 "diagnostics" -> result.success(readNativeLog())
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    private fun runSipResultTask(
+        taskName: String,
+        result: MethodChannel.Result,
+        task: () -> Map<String, Any?>
+    ) {
+        Thread {
+            try {
+                val taskResult = task()
+                runOnUiThread {
+                    if (taskResult["status"] == "error") {
+                        result.error(
+                            taskResult["code"]?.toString() ?: "sip_error",
+                            taskResult["message"]?.toString(),
+                            taskResult
+                        )
+                    } else {
+                        result.success(taskResult)
+                    }
+                }
+            } catch (error: Exception) {
+                appendNativeLog("ERROR async $taskName ${error.stackTraceToStringSafe()}")
+                runOnUiThread {
+                    result.error("${taskName}_exception", error.message, null)
+                }
+            }
+        }.apply {
+            name = "enterprise-im-sip-$taskName"
+            isDaemon = true
+            start()
         }
     }
 
@@ -272,20 +305,25 @@ class MainActivity : FlutterActivity() {
             activeCallId = callId
             activeMediaType = mediaType
             appendNativeLog("PJSUA2 create endpoint target=${target.host}:${target.port} domain=${target.domain}")
-            if (mediaType == "video") {
-                PjCameraInfo2.SetCameraManager(getSystemService(Context.CAMERA_SERVICE) as CameraManager)
-                appendNativeLog("VIDEO Camera2 manager attached for PJSIP")
-            }
             val endpoint = Endpoint()
             endpoint.libCreate()
             val epConfig = EpConfig()
             epConfig.logConfig.level = 4
             epConfig.logConfig.consoleLevel = 4
             endpoint.libInit(epConfig)
-            endpoint.transportCreate(pjsip_transport_type_e.PJSIP_TRANSPORT_UDP, TransportConfig())
+            val transportType = if (registrar.contains("transport=tcp", ignoreCase = true)) {
+                pjsip_transport_type_e.PJSIP_TRANSPORT_TCP
+            } else {
+                pjsip_transport_type_e.PJSIP_TRANSPORT_UDP
+            }
+            endpoint.transportCreate(transportType, TransportConfig())
             endpoint.libStart()
             if (!endpoint.libIsThreadRegistered()) {
                 endpoint.libRegisterThread("flutter-sip")
+            }
+            if (mediaType == "video") {
+                PjCameraInfo2.SetCameraManager(getSystemService(Context.CAMERA_SERVICE) as CameraManager)
+                appendNativeLog("VIDEO Camera2 manager attached for PJSIP")
             }
 
             val accountConfig = AccountConfig()
@@ -384,6 +422,7 @@ class MainActivity : FlutterActivity() {
                 pjsipAccount = null
                 pjsipEndpoint = null
                 remoteVideoWindow = null
+                remoteVideoAttached = false
                 appendNativeLog("PJSUA2 stop done")
             }
         }
@@ -461,10 +500,8 @@ class MainActivity : FlutterActivity() {
                     if (mediaInfo.type == pjmedia_type.PJMEDIA_TYPE_VIDEO &&
                         mediaInfo.status == pjsua_call_media_status.PJSUA_CALL_MEDIA_ACTIVE
                     ) {
-                        remoteVideoWindow = mediaInfo.videoWindow ?: VideoWindow(mediaInfo.videoIncomingWindowId)
                         appendNativeLog("MEDIA video active index=${mediaInfo.index} incomingWindow=${mediaInfo.videoIncomingWindowId}")
                         emitSipEvent("media", "video active")
-                        attachRemoteVideoWindow()
                     }
                 }
             } catch (error: Exception) {
@@ -472,24 +509,44 @@ class MainActivity : FlutterActivity() {
                 emitSipEvent("error", "media state failed: ${error.message}")
             }
         }
+
+        override fun onCallMediaEvent(prm: OnCallMediaEventParam) {
+            try {
+                if (prm.ev.type != pjmedia_event_type.PJMEDIA_EVENT_FMT_CHANGED) return
+                val info: CallInfo = getInfo()
+                val index = prm.medIdx.toInt()
+                if (index < 0 || index >= info.media.size) return
+                val mediaInfo = info.media[index]
+                if (mediaInfo.type != pjmedia_type.PJMEDIA_TYPE_VIDEO) return
+                remoteVideoWindow = mediaInfo.videoWindow ?: VideoWindow(mediaInfo.videoIncomingWindowId)
+                remoteVideoAttached = false
+                val fmt = prm.ev.data.fmtChanged
+                appendNativeLog("MEDIA video fmt changed index=$index size=${fmt.newWidth}x${fmt.newHeight} incomingWindow=${mediaInfo.videoIncomingWindowId}")
+                emitSipEvent("video", "remote format ${fmt.newWidth}x${fmt.newHeight}")
+                attachRemoteVideoWindow()
+            } catch (error: Exception) {
+                appendNativeLog("ERROR media event ${error.stackTraceToStringSafe()}")
+                emitSipEvent("error", "media event failed: ${error.message}")
+            }
+        }
     }
 
-    private fun setRemoteVideoSurface(surface: Surface?) {
-        remoteVideoSurface = surface
+    private fun setRemoteVideoHolder(holder: SurfaceHolder?) {
+        remoteVideoHolder = holder
+        remoteVideoAttached = false
         attachRemoteVideoWindow()
     }
 
     private fun attachRemoteVideoWindow() {
-        val surface = remoteVideoSurface ?: return
+        if (remoteVideoAttached) return
+        val holder = remoteVideoHolder ?: return
         val videoWindow = remoteVideoWindow ?: return
         try {
-            val windowHandle = WindowHandle()
-            windowHandle.setWindow(surface)
             val videoWindowHandle = VideoWindowHandle()
-            videoWindowHandle.setHandle(windowHandle)
+            videoWindowHandle.handle.setWindow(holder.surface)
             videoWindow.setWindow(videoWindowHandle)
-            videoWindow.Show(true)
-            appendNativeLog("VIDEO remote window attached")
+            remoteVideoAttached = true
+            appendNativeLog("VIDEO remote window attached after fmt change")
             emitSipEvent("video", "remote window attached")
         } catch (error: Exception) {
             appendNativeLog("ERROR remote video attach ${error.stackTraceToStringSafe()}")
@@ -567,6 +624,7 @@ class MainActivity : FlutterActivity() {
         private val view = SurfaceView(context)
 
         init {
+            activity.setRemoteVideoHolder(view.holder)
             view.holder.addCallback(this)
         }
 
@@ -574,19 +632,19 @@ class MainActivity : FlutterActivity() {
 
         override fun dispose() {
             view.holder.removeCallback(this)
-            activity.setRemoteVideoSurface(null)
+            activity.setRemoteVideoHolder(null)
         }
 
         override fun surfaceCreated(holder: SurfaceHolder) {
-            activity.setRemoteVideoSurface(holder.surface)
+            activity.setRemoteVideoHolder(holder)
         }
 
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-            activity.setRemoteVideoSurface(holder.surface)
+            activity.setRemoteVideoHolder(holder)
         }
 
         override fun surfaceDestroyed(holder: SurfaceHolder) {
-            activity.setRemoteVideoSurface(null)
+            activity.setRemoteVideoHolder(null)
         }
     }
 

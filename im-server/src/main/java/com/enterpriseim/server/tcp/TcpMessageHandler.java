@@ -3,6 +3,7 @@ package com.enterpriseim.server.tcp;
 import lombok.val;
 
 import com.enterpriseim.server.config.ImProperties;
+import com.enterpriseim.server.auth.TokenService;
 import com.enterpriseim.server.message.MessageService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
@@ -18,12 +19,14 @@ public class TcpMessageHandler extends SimpleChannelInboundHandler<String> {
     private final ObjectMapper objectMapper;
     private final OnlineSessionRegistry sessions;
     private final ImProperties properties;
+    private final TokenService tokenService;
     private final MessageService messageService;
 
-    public TcpMessageHandler(ObjectMapper objectMapper, OnlineSessionRegistry sessions, ImProperties properties, MessageService messageService) {
+    public TcpMessageHandler(ObjectMapper objectMapper, OnlineSessionRegistry sessions, ImProperties properties, TokenService tokenService, MessageService messageService) {
         this.objectMapper = objectMapper;
         this.sessions = sessions;
         this.properties = properties;
+        this.tokenService = tokenService;
         this.messageService = messageService;
     }
 
@@ -39,6 +42,9 @@ public class TcpMessageHandler extends SimpleChannelInboundHandler<String> {
                 break;
             case "TEXT":
                 handleText(ctx, message);
+                break;
+            case "TYPING":
+                handleTyping(ctx, message);
                 break;
             case "ACK":
                 write(ctx, response(message, "ACK_OK", payload("ack", true)));
@@ -60,15 +66,24 @@ public class TcpMessageHandler extends SimpleChannelInboundHandler<String> {
 
     private void handleAuth(ChannelHandlerContext ctx, TcpMessage message) throws Exception {
         val token = message.payload() == null ? "" : message.payload().path("token").asText("");
-        if (!token.startsWith(properties.getAuth().getDemoTokenPrefix())) {
-            write(ctx, response(message, "AUTH_FAILED", payload("message", "invalid token")));
-            ctx.close();
-            return;
-        }
-
-        val userId = token.substring(properties.getAuth().getDemoTokenPrefix().length());
+        val userId = resolveUserId(token);
         sessions.bind(userId, ctx.channel());
         write(ctx, response(message, "AUTH_OK", payload("userId", userId)));
+    }
+
+    private String resolveUserId(String token) throws Exception {
+        if (token.startsWith(properties.getAuth().getDemoTokenPrefix())) {
+            return token.substring(properties.getAuth().getDemoTokenPrefix().length());
+        }
+        try {
+            val claims = tokenService.verify(token);
+            if (!"user".equals(claims.scope)) {
+                throw new IllegalArgumentException("invalid token scope");
+            }
+            return claims.subject;
+        } catch (Exception e) {
+            throw e;
+        }
     }
 
     private void handleText(ChannelHandlerContext ctx, TcpMessage message) throws Exception {
@@ -79,6 +94,10 @@ public class TcpMessageHandler extends SimpleChannelInboundHandler<String> {
         if (message.to() == null || message.to().trim().isEmpty()) {
             return;
         }
+        val deliveryPayload = message.payload() != null && message.payload().isObject()
+                ? (ObjectNode) message.payload().deepCopy()
+                : objectMapper.createObjectNode();
+        deliveryPayload.put("messageId", persisted.messageId());
 
         val delivery = new TcpMessage(
                 message.version(),
@@ -88,9 +107,27 @@ public class TcpMessageHandler extends SimpleChannelInboundHandler<String> {
                 message.to(),
                 message.conversationId(),
                 System.currentTimeMillis(),
-                message.payload()
+                deliveryPayload
         );
         sessions.findChannel(message.to()).ifPresent(channel -> channel.writeAndFlush(toLine(delivery)));
+    }
+
+    private void handleTyping(ChannelHandlerContext ctx, TcpMessage message) throws Exception {
+        if (message.to() != null) {
+            sessions.findChannel(message.to()).ifPresent(target -> {
+                val deliver = new TcpMessage(
+                        message.version() == null ? "1" : message.version(),
+                        "TYPING_DELIVER",
+                        message.requestId(),
+                        message.from(),
+                        message.to(),
+                        message.conversationId(),
+                        System.currentTimeMillis(),
+                        message.payload()
+                );
+                target.writeAndFlush(toLine(deliver));
+            });
+        }
     }
 
     private TcpMessage response(TcpMessage source, String type, ObjectNode payload) {

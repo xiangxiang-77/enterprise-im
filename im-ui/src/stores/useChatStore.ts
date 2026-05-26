@@ -1,6 +1,6 @@
 import { create } from "zustand"
+import { persist, createJSONStorage } from "zustand/middleware"
 import type { Session, Message, User, Group } from "@/types"
-import { mockSessions, mockUsers, mockGroups } from "@/utils/mock"
 
 interface ChatState {
   sessions: Session[]
@@ -22,6 +22,8 @@ interface ChatState {
   recallMessage: (sessionId: string, messageId: string) => void
   updateGroup: (groupId: string, updates: Partial<Group>) => void
   addUser: (user: User) => void
+  addGroup: (group: Group) => void
+  addSession: (session: Session) => void
   addMember: (groupId: string, userId: string) => void
   removeMember: (groupId: string, userId: string) => void
   setMemberAlias: (groupId: string, userId: string, alias: string) => void
@@ -37,16 +39,17 @@ interface ChatState {
   setDraft: (sessionId: string, draft: string) => void
   resendMessage: (sessionId: string, messageId: string) => void
   transferGroupOwner: (groupId: string, newOwnerId: string) => void
+  loadConversations: (token: string) => Promise<void>
 }
 
-export const useChatStore = create<ChatState>((set, get) => ({
-  sessions: mockSessions,
+export const useChatStore = create<ChatState>()(persist((set, get) => ({
+  sessions: [],
   activeSessionId: null,
   messages: {}, // Will load on demand or init
   favorites: [],
   typingStatus: {},
-  users: mockUsers.reduce((acc, user) => ({ ...acc, [user.id]: user }), {}),
-  groups: mockGroups.reduce((acc, group) => ({ ...acc, [group.id]: group }), {}),
+  users: {},
+  groups: {},
 
   setDraft: (sessionId, draft) =>
     set((state) => ({
@@ -220,6 +223,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
   addUser: (user) => 
     set((state) => ({
       users: { ...state.users, [user.id]: user }
+    })),
+
+  addGroup: (group) =>
+    set((state) => ({
+      groups: { ...state.groups, [group.id]: group }
+    })),
+
+  addSession: (session) =>
+    set((state) => ({
+      sessions: [session, ...state.sessions.filter((item) => item.id !== session.id)]
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
     })),
 
   addMember: (groupId, userId) =>
@@ -536,7 +550,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     const newSession: Session = {
-        id: targetId, // Simplification: Use targetId as sessionId
+        id: targetId,
         targetId,
         type,
         name,
@@ -559,9 +573,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const newGroup: Group = {
         id,
         name,
-        avatar: `https://api.dicebear.com/7.x/initials/svg?seed=${name}`,
+        avatar: "",
         members: memberIds,
-        ownerId: '1', // Current user
+        ownerId: "",
         createdAt: new Date().toISOString(),
         notice: "暂无公告"
     }
@@ -579,10 +593,44 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activeSessionId: state.activeSessionId === id ? null : state.activeSessionId,
     })),
 
-  updateSession: (id: string, updates: Partial<Session>) =>
+  updateSession: (id: string, updates: Partial<Session>) => {
     set((state) => ({
       sessions: state.sessions.map((s) => (s.id === id ? { ...s, ...updates } : s)),
-    })),
+    }))
+    if (
+      updates.isPinned !== undefined ||
+      updates.isMuted !== undefined ||
+      updates.isScreenshotNotificationEnabled !== undefined ||
+      updates.isRecallNoticeEnabled !== undefined ||
+      updates.isReadAfterBurn !== undefined ||
+      updates.isStrongReminder !== undefined ||
+      updates.isDisplayMemberNicknames !== undefined ||
+      updates.isSavedToContacts !== undefined
+    ) {
+      import("@/services/api").then(({ updateConversationSettingsApi }) => {
+        const token = persistedAuthToken()
+        const settings: {
+          muted?: boolean
+          pinned?: boolean
+          screenshotNotice?: boolean
+          recallNotice?: boolean
+          readAfterBurn?: boolean
+          strongReminder?: boolean
+          displayMemberNicknames?: boolean
+          savedToContacts?: boolean
+        } = {}
+        if (updates.isMuted !== undefined) settings.muted = updates.isMuted
+        if (updates.isPinned !== undefined) settings.pinned = updates.isPinned
+        if (updates.isScreenshotNotificationEnabled !== undefined) settings.screenshotNotice = updates.isScreenshotNotificationEnabled
+        if (updates.isRecallNoticeEnabled !== undefined) settings.recallNotice = updates.isRecallNoticeEnabled
+        if (updates.isReadAfterBurn !== undefined) settings.readAfterBurn = updates.isReadAfterBurn
+        if (updates.isStrongReminder !== undefined) settings.strongReminder = updates.isStrongReminder
+        if (updates.isDisplayMemberNicknames !== undefined) settings.displayMemberNicknames = updates.isDisplayMemberNicknames
+        if (updates.isSavedToContacts !== undefined) settings.savedToContacts = updates.isSavedToContacts
+        updateConversationSettingsApi(id, settings, token).catch(console.error)
+      })
+    }
+  },
 
   addFavorite: (message) => set((state) => ({ favorites: [...state.favorites, message] })),
   removeFavorite: (messageId) => set((state) => ({ favorites: state.favorites.filter(m => m.id !== messageId) })),
@@ -608,14 +656,65 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ...state.messages,
         [sessionId]: (state.messages[sessionId] || []).map((m) => {
           if (m.id !== messageId) return m
-          
+
           const likes = m.likes || []
           if (likes.includes(userId)) {
               return { ...m, likes: likes.filter(id => id !== userId) }
           }
-          
+
           return { ...m, likes: [...likes, userId] }
         }),
       },
     })),
+
+  loadConversations: async (token: string) => {
+    try {
+      const { fetchConversationsApi } = await import("@/services/api")
+      const convs = await fetchConversationsApi(token)
+      const sessions: Session[] = convs.map(c => ({
+        id: c.id,
+        type: c.type,
+        targetId: c.targetId,
+        name: c.targetId,
+        avatar: "",
+        unreadCount: c.unreadCount,
+        isPinned: c.pinned,
+        isMuted: c.muted,
+        isScreenshotNotificationEnabled: c.screenshotNotice ?? true,
+        isRecallNoticeEnabled: c.recallNotice ?? true,
+        isReadAfterBurn: c.readAfterBurn ?? false,
+        isStrongReminder: c.strongReminder ?? false,
+        isDisplayMemberNicknames: c.displayMemberNicknames ?? true,
+        isSavedToContacts: c.savedToContacts ?? false,
+        updatedAt: c.lastTime ? new Date(c.lastTime).getTime() : Date.now(),
+        lastMessage: c.lastContent ? {
+          id: "last_" + c.id,
+          sessionId: c.id,
+          senderId: c.lastSender || "",
+          content: c.lastContent,
+          type: (c.lastType as Message["type"]) || "text",
+          timestamp: c.lastTime ? new Date(c.lastTime).getTime() : Date.now(),
+          status: "sent",
+        } : undefined,
+      }))
+      set({ sessions })
+    } catch (e) {
+      console.error("Failed to load conversations", e)
+    }
+  },
+}), {
+  name: "chat-store",
+  storage: createJSONStorage(() => localStorage),
+  partialize: (state) => ({ sessions: state.sessions, users: state.users, groups: state.groups }),
 }))
+
+function persistedAuthToken() {
+  try {
+    const raw = localStorage.getItem("auth-storage")
+    if (!raw) return undefined
+    const parsed = JSON.parse(raw)
+    return parsed?.state?.token || undefined
+  } catch {
+    return undefined
+  }
+}

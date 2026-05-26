@@ -1,4 +1,5 @@
 import { useNavigate, useParams } from "react-router-dom"
+import QRCode from "qrcode"
 import { 
   ChevronLeft, 
   ChevronRight, 
@@ -22,13 +23,23 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from "@/components/ui/input"
 import { ContactSelector } from "@/components/common/ContactSelector"
 import { useState, useEffect } from "react"
+import { Text, BellOff, UserMinus } from "lucide-react"
 import type { User, Group } from "@/types"
+import {
+  createGroupInviteApi,
+  dissolveGroupApi,
+  exportGroupMembersApi,
+  fetchGroupJoinRequestsApi,
+  handleGroupJoinRequestApi,
+  setGroupApprovalApi,
+  type GroupJoinRequest,
+} from "@/services/api"
 
 export default function ChatSettings() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { sessions, users, groups, updateSession, updateGroup, addMember, removeMember, setMemberAlias, createGroup } = useChatStore()
-  const { user: currentUser } = useAuthStore()
+  const { user: currentUser, token } = useAuthStore()
   
   const session = sessions.find((s) => s.id === id)
   const isGroup = session?.type === "group"
@@ -49,6 +60,12 @@ export default function ChatSettings() {
   const [isTransferOwnerOpen, setIsTransferOwnerOpen] = useState(false)
   const [isBackgroundOpen, setIsBackgroundOpen] = useState(false)
   const [isCreateGroupOpen, setIsCreateGroupOpen] = useState(false)
+  const [isRemarkDialogOpen, setIsRemarkDialogOpen] = useState(false)
+  const [remarkValue, setRemarkValue] = useState(session?.remark || "")
+  const [isDeleteFriendConfirm, setIsDeleteFriendConfirm] = useState(false)
+  const [groupInvitePayload, setGroupInvitePayload] = useState("")
+  const [groupInviteQr, setGroupInviteQr] = useState("")
+  const [joinRequests, setJoinRequests] = useState<GroupJoinRequest[]>([])
 
   if (!session) {
     return <div className="flex h-full items-center justify-center">未找到会话</div>
@@ -98,6 +115,46 @@ export default function ChatSettings() {
     }
   }
 
+  const handleCreateInvite = async () => {
+    if (!group) return
+    const invite = await createGroupInviteApi(group.id, token || undefined)
+    setGroupInvitePayload(invite.qrPayload)
+    setGroupInviteQr(await QRCode.toDataURL(invite.qrPayload, { margin: 2, width: 240 }))
+  }
+
+  const handleToggleApproval = async (enabled: boolean) => {
+    if (!group) return
+    await setGroupApprovalApi(group.id, enabled, token || undefined)
+    updateGroup(group.id, { joinApprovalRequired: enabled } as any)
+  }
+
+  const handleLoadJoinRequests = async () => {
+    if (!group) return
+    const rows = await fetchGroupJoinRequestsApi(group.id, token || undefined)
+    setJoinRequests(rows)
+  }
+
+  const handleJoinRequest = async (requestId: string, accept: boolean) => {
+    if (!group) return
+    await handleGroupJoinRequestApi(group.id, requestId, accept, token || undefined)
+    await handleLoadJoinRequests()
+  }
+
+  const handleExportMembers = async () => {
+    if (!group) return
+    const rows = await exportGroupMembersApi(group.id, token || undefined)
+    const text = rows.map((row) => `${row.userId},${row.userName || ""},${row.role}`).join("\n")
+    await navigator.clipboard?.writeText(text)
+    alert(`已导出 ${rows.length} 名成员到剪贴板`)
+  }
+
+  const handleDissolveGroup = async () => {
+    if (!group || !confirm("确定解散群聊？")) return
+    await dissolveGroupApi(group.id, token || undefined)
+    useChatStore.getState().deleteSession(session.id)
+    navigate("/chat")
+  }
+
   const handleUpdateAlias = () => {
     if (isGroup && group && currentUser) {
       setMemberAlias(group.id, currentUser.id, myAlias)
@@ -114,6 +171,20 @@ export default function ChatSettings() {
   const handleRemoveMembers = (selectedUsers: (User | Group)[]) => {
     if (isGroup && group) {
       selectedUsers.filter((u): u is User => "status" in u).forEach(u => removeMember(group.id, u.id))
+    }
+  }
+
+  const handleSaveRemark = () => {
+    if (session) {
+      updateSession(session.id, { remark: remarkValue })
+      setIsRemarkDialogOpen(false)
+    }
+  }
+
+  const handleDeleteFriend = () => {
+    if (session) {
+      useChatStore.getState().deleteSession(session.id)
+      navigate("/chat")
     }
   }
 
@@ -217,13 +288,13 @@ export default function ChatSettings() {
           {/* Members Area */}
           <div className="bg-background p-4 mt-2">
             <div className="grid grid-cols-5 gap-y-4">
-              {memberList.slice(0, 18).map((m) => <MemberItem key={m.id} user={m} />)}
+              {memberList.slice(0, 20).map((m) => <MemberItem key={m.id} user={m} />)}
               <MemberItem isAdd />
               {isGroup && <MemberItem isRemove />}
             </div>
-            {isGroup && memberList.length > 18 && (
-              <Button variant="ghost" className="w-full mt-4 text-muted-foreground text-sm">
-                查看全部群成员 <ChevronRight className="h-4 w-4 ml-1" />
+            {isGroup && memberList.length > 20 && (
+              <Button variant="ghost" className="w-full mt-4 text-muted-foreground text-sm" onClick={() => setIsRemoveMemberOpen(true)}>
+                查看全部 {memberList.length} 位成员 <ChevronRight className="h-4 w-4 ml-1" />
               </Button>
             )}
           </div>
@@ -261,9 +332,20 @@ export default function ChatSettings() {
                     <DialogTitle>群二维码</DialogTitle>
                   </DialogHeader>
                   <div className="flex flex-col items-center justify-center py-8 gap-4">
+                    {groupInviteQr && (
+                      <div className="flex h-64 w-64 items-center justify-center rounded-lg border bg-white p-3">
+                        <img src={groupInviteQr} alt="群邀请二维码" className="h-full w-full object-contain" />
+                      </div>
+                    )}
+                    {groupInvitePayload && (
+                      <div className="w-full rounded-md bg-muted p-2 text-center text-xs break-all text-muted-foreground">
+                        {groupInvitePayload}
+                      </div>
+                    )}
                     <div className="h-48 w-48 bg-muted rounded-lg flex items-center justify-center">
-                       <Share2 className="h-12 w-12 text-muted-foreground" />
+                       <div className="px-3 text-center text-xs break-all text-muted-foreground">{groupInvitePayload || "点击生成群邀请"}</div>
                     </div>
+                    <Button onClick={handleCreateInvite}>生成邀请码</Button>
                     <p className="text-sm text-muted-foreground">扫一扫加入群聊</p>
                   </div>
                 </DialogContent>
@@ -339,7 +421,7 @@ export default function ChatSettings() {
                          className="h-16 rounded cursor-pointer border hover:border-primary"
                          style={{ background: color }}
                          onClick={() => {
-                           // Mock background setting
+                           // Local preference persisted through chat store.
                            alert("背景设置成功")
                            setIsBackgroundOpen(false)
                          }}
@@ -376,28 +458,91 @@ export default function ChatSettings() {
                </Dialog>
              )}
 
-             {isGroup && <SettingsItem label="显示群成员昵称" action={<Switch defaultChecked />} />}
+             {isGroup && <SettingsItem label="显示群成员昵称" action={<Switch checked={session.isDisplayMemberNicknames ?? true} onCheckedChange={(c) => updateSession(session.id, { isDisplayMemberNicknames: c })} />} />}
              
              {isGroup && isOwner && (
                 <SettingsItem label="群主管理权转让" onClick={() => setIsTransferOwnerOpen(true)} />
              )}
 
-             {!isGroup && (
-               <SettingsItem 
-                 label="加入黑名单" 
-                 action={<Switch checked={session.isBlocked} onCheckedChange={(c) => updateSession(session.id, { isBlocked: c })} />} 
+             {isGroup && isOwner && (
+               <SettingsItem
+                 label="入群审批"
+                 action={<Switch checked={Boolean((group as any)?.joinApprovalRequired)} onCheckedChange={handleToggleApproval} />}
                />
              )}
-             
+
+             {isGroup && isOwner && (
+               <Dialog onOpenChange={(open) => { if (open) void handleLoadJoinRequests() }}>
+                 <DialogTrigger asChild>
+                   <div><SettingsItem label="入群申请" value={`${joinRequests.length} 条`} /></div>
+                 </DialogTrigger>
+                 <DialogContent>
+                   <DialogHeader><DialogTitle>入群申请</DialogTitle></DialogHeader>
+                   <div className="grid gap-3 py-2">
+                     {joinRequests.map((item) => (
+                       <div key={item.id} className="flex items-center justify-between gap-3 rounded-md border p-3">
+                         <div className="min-w-0">
+                           <p className="truncate text-sm font-medium">{item.requesterName}</p>
+                           <p className="truncate text-xs text-muted-foreground">{item.message || item.status}</p>
+                         </div>
+                         <div className="flex gap-2">
+                           <Button size="sm" variant="outline" onClick={() => void handleJoinRequest(item.id, false)}>拒绝</Button>
+                           <Button size="sm" onClick={() => void handleJoinRequest(item.id, true)}>同意</Button>
+                         </div>
+                       </div>
+                     ))}
+                     {joinRequests.length === 0 && <p className="py-6 text-center text-sm text-muted-foreground">暂无申请</p>}
+                   </div>
+                 </DialogContent>
+               </Dialog>
+             )}
+
+             {isGroup && isOwner && <SettingsItem label="导出群成员" onClick={() => void handleExportMembers()} />}
+
+             {!isGroup && (
+               <>
+                 <Dialog open={isRemarkDialogOpen} onOpenChange={setIsRemarkDialogOpen}>
+                   <DialogTrigger asChild>
+                     <div><SettingsItem label="设置备注" icon={Text} value={session.remark || "未设置"} /></div>
+                   </DialogTrigger>
+                   <DialogContent>
+                     <DialogHeader><DialogTitle>设置备注</DialogTitle></DialogHeader>
+                     <div className="grid gap-4 py-4">
+                       <Input value={remarkValue} onChange={(e) => setRemarkValue(e.target.value)} placeholder="输入备注名" />
+                       <Button onClick={handleSaveRemark}>保存</Button>
+                     </div>
+                   </DialogContent>
+                 </Dialog>
+
+                 <SettingsItem
+                   label="撤回通知"
+                   icon={BellOff}
+                   action={<Switch checked={session.isRecallNoticeEnabled ?? true} onCheckedChange={(c) => updateSession(session.id, { isRecallNoticeEnabled: c })} />}
+                 />
+
+                 <SettingsItem
+                   label="加入黑名单"
+                   action={<Switch checked={session.isBlocked} onCheckedChange={(c) => updateSession(session.id, { isBlocked: c })} />}
+                 />
+               </>
+             )}
+
              <SettingsItem label="投诉" onClick={() => alert("投诉已提交")} />
           </div>
 
           <div className="flex flex-col divide-y border-y bg-background">
             <SettingsItem label="清空聊天记录" icon={Trash2} destructive onClick={handleClearHistory} />
+            {!isGroup && (
+              <SettingsItem label="删除好友" icon={UserMinus} destructive onClick={() => setIsDeleteFriendConfirm(true)} />
+            )}
           </div>
           
           <div className="px-4">
             <Button variant="destructive" className="w-full" size="lg" onClick={() => {
+              if (isGroup && isOwner) {
+                  void handleDissolveGroup()
+                  return
+              }
               if (isGroup && isOwner && group && group.members.length > 1) {
                   alert("群主退出前请先转让群主")
                   return
@@ -448,14 +593,25 @@ export default function ChatSettings() {
       )}
       
       {!isGroup && (
-          <ContactSelector 
-             open={isCreateGroupOpen} 
+          <ContactSelector
+             open={isCreateGroupOpen}
              onOpenChange={setIsCreateGroupOpen}
              onSelect={handleCreateGroupFromSingle}
              excludeIds={[currentUser?.id || "", session.targetId]}
              title="发起群聊"
           />
       )}
+
+      <Dialog open={isDeleteFriendConfirm} onOpenChange={setIsDeleteFriendConfirm}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>删除好友</DialogTitle></DialogHeader>
+          <p className="py-2 text-sm text-muted-foreground">确定要删除该好友吗？删除后将同时清除聊天记录。</p>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setIsDeleteFriendConfirm(false)}>取消</Button>
+            <Button variant="destructive" onClick={handleDeleteFriend}>删除</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

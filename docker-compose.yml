@@ -28,17 +28,22 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
       MINIO_BUCKET: ${MINIO_BUCKET:-enterprise-im}
-      TURN_URL: ${TURN_URL:-turn:10.200.71.31:3478}
+      TURN_URL: ${TURN_URL:-turn:10.200.38.225:3478}
       TURN_USERNAME: ${TURN_USERNAME:-enterprise-im}
       TURN_PASSWORD: ${TURN_PASSWORD:-enterprise-im-secret}
       PJSIP_SIGNAL_URL: ${PJSIP_SIGNAL_URL:-http://pjsip-gateway:7070}
       SIP_DOMAIN: ${SIP_DOMAIN:-enterprise-im.local}
       SIP_REGISTRAR: ${SIP_REGISTRAR:-sip:127.0.0.1:5060}
-      SIP_ANDROID_REGISTRAR: ${SIP_ANDROID_REGISTRAR:-sip:10.200.71.31:5060}
+      SIP_ANDROID_REGISTRAR: ${SIP_ANDROID_REGISTRAR:-sip:127.0.0.1:5060;transport=tcp}
       SIP_REALM: ${SIP_REALM:-asterisk}
       SIP_PASSWORD: ${SIP_PASSWORD:-enterprise-im-sip-secret}
       DEMO_TOKEN_PREFIX: ${DEMO_TOKEN_PREFIX:-demo-token-}
+      ACCEPT_DEMO_TOKENS: ${ACCEPT_DEMO_TOKENS:-false}
+      DEMO_CALL_ENDPOINTS_ENABLED: ${DEMO_CALL_ENDPOINTS_ENABLED:-false}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      JWT_ISSUER: ${JWT_ISSUER:-enterprise-im}
+      JWT_SECRET: ${JWT_SECRET:-change-me-enterprise-im-jwt-secret}
+      ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-86400}
     ports:
       - "${HTTP_PORT:-18080}:8080"
       - "${TCP_PORT:-19090}:9000"

@@ -89,6 +89,20 @@ class ImSocketClient {
     return requestId
   }
 
+  sendTyping(params: { to: string; conversationId: string; isTyping: boolean }) {
+    const message: TcpMessage = {
+      version: "1",
+      type: "TYPING",
+      requestId: `typing-${Date.now()}`,
+      from: this.userId ?? undefined,
+      to: params.to,
+      conversationId: params.conversationId,
+      timestamp: Date.now(),
+      payload: { isTyping: params.isTyping },
+    }
+    this.sendRaw(message)
+  }
+
   sendWebRtcSignal(params: {
     to: string
     conversationId: string

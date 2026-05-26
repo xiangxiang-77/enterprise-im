@@ -60,11 +60,11 @@ Add-Check `
     -Warn "Android bridge may reject sip:host:port registrar strings as invalid" `
     -Required
 
-$flutterMain = Join-Path $root "flutter-client\lib\main.dart"
+$flutterMain = Join-Path $root "flutter-client\lib\screens\chat_screen.dart"
 $flutterMainText = Read-TextSafe $flutterMain
 Add-Check `
     -Name "Flutter SIP error detail UI" `
-    -Ok ($flutterMainText -match 'setMethodCallHandler\(handleSipChannelCall\)' -and $flutterMainText -match 'SIP EVENT' -and $flutterMainText -match 'registration' -and $flutterMainText -match 'error: \$\{shortSipMessage') `
+    -Ok ($flutterMainText -match 'setMethodCallHandler\(handleSipChannelCall\)' -and $flutterMainText -match 'SIP EVENT' -and $flutterMainText -match 'registration' -and $flutterMainText -match 'error: \$\{_?shortSipMessage') `
     -Pass "Flutter listens for native SIP events and displays concise registration/error details" `
     -Warn "Flutter UI may still collapse native SIP failures to generic SIP error" `
     -Required
@@ -145,15 +145,25 @@ Add-Check `
 
 $pjsua = Join-Path $root "qt-client\third_party\pjsip\windows\pjsua.exe"
 $pjsuaVideoHelp = $false
+$pjsuaVideoCodec = $false
 if (Test-Path $pjsua) {
     $help = & $pjsua --help 2>&1 | Out-String
     $pjsuaVideoHelp = $help -match '(?i)(--video|--vid|video|camera|render|capture-dev=.*video)'
+    $codecList = "vid codec list`nq`n" | & $pjsua --null-audio --video --local-port=5097 2>&1 | Out-String
+    $pjsuaVideoCodec = $codecList -match '(?i)(H264|VP8|OpenH264|libvpx)' -and $codecList -notmatch 'Found\s+0\s+video codecs'
 }
 Add-Check `
     -Name "Qt bundled pjsua video support" `
     -Ok $pjsuaVideoHelp `
     -Pass "pjsua help exposes video/camera options" `
     -Warn "bundled Windows pjsua help does not expose video options; desktop video rendering may be audio-only runtime" `
+    -Required
+
+Add-Check `
+    -Name "Qt bundled pjsua video codecs" `
+    -Ok $pjsuaVideoCodec `
+    -Pass "pjsua exposes at least one negotiated video codec such as H264 or VP8" `
+    -Warn "bundled Windows pjsua has video UI support but no active H264/VP8 codec; Qt desktop will reject video SDP" `
     -Required
 
 Write-Host ""

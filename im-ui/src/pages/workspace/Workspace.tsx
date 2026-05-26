@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   BarChart,
   Calendar,
@@ -13,12 +13,14 @@ import {
   Video,
 } from "lucide-react"
 
+import { type AdminWorkspaceApp, fetchWorkspaceAppsApi } from "@/services/api"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
+import { useAuthStore } from "@/stores/useAuthStore"
 
 type WorkspaceApp = {
   id: string
@@ -26,9 +28,10 @@ type WorkspaceApp = {
   icon: typeof CheckSquare
   color: string
   description: string
+  url?: string
 }
 
-const apps: WorkspaceApp[] = [
+const defaultApps: WorkspaceApp[] = [
   { id: "approval", name: "审批", icon: CheckSquare, color: "bg-blue-500", description: "请假、报销、采购审批" },
   { id: "checkin", name: "打卡", icon: Calendar, color: "bg-orange-500", description: "上下班打卡和考勤记录" },
   { id: "report", name: "汇报", icon: FileText, color: "bg-green-500", description: "日报、周报、项目进度" },
@@ -41,21 +44,66 @@ const apps: WorkspaceApp[] = [
   { id: "notice", name: "公告", icon: Globe, color: "bg-red-500", description: "企业通知公告" },
 ]
 
+const iconMap: Record<string, typeof CheckSquare> = {
+  approval: CheckSquare,
+  checkin: Calendar,
+  calendar: Calendar,
+  mail: Mail,
+  cloud: Cloud,
+  contacts: Users,
+  meeting: Video,
+  analytics: BarChart,
+  report: FileText,
+  notice: Globe,
+  briefcase: LayoutGrid,
+}
+
+const colorMap = ["bg-blue-500", "bg-emerald-500", "bg-orange-500", "bg-indigo-500", "bg-cyan-500", "bg-violet-500"]
+
+function toWorkspaceApp(app: AdminWorkspaceApp, index: number): WorkspaceApp {
+  return {
+    id: app.id,
+    name: app.name,
+    icon: iconMap[app.icon || ""] ?? LayoutGrid,
+    color: colorMap[index % colorMap.length],
+    description: app.visibleDepartmentId ? `部门可见：${app.visibleDepartmentId}` : "企业后台配置应用",
+    url: app.url,
+  }
+}
+
 export default function Workspace() {
+  const { token } = useAuthStore()
   const [selectedAppId, setSelectedAppId] = useState("approval")
-  const [feedback, setFeedback] = useState("审批列表已加载")
+  const [feedback, setFeedback] = useState("工作台应用已加载")
+  const [serverApps, setServerApps] = useState<AdminWorkspaceApp[]>([])
   const [approvalTitle, setApprovalTitle] = useState("报销申请")
   const [reportText, setReportText] = useState("今日完成联调，明日继续验收")
 
+  useEffect(() => {
+    if (!token) return
+    fetchWorkspaceAppsApi(token)
+      .then((items) => {
+        setServerApps(items)
+        if (items[0]) setSelectedAppId(items[0].id)
+        setFeedback(`已从后台加载 ${items.length} 个工作台应用`)
+      })
+      .catch((error) => setFeedback(error instanceof Error ? error.message : "工作台应用加载失败"))
+  }, [token])
+
+  const apps = useMemo(
+    () => serverApps.length > 0 ? serverApps.map(toWorkspaceApp) : defaultApps,
+    [serverApps]
+  )
+
   const selectedApp = useMemo(
     () => apps.find((app) => app.id === selectedAppId) ?? apps[0],
-    [selectedAppId]
+    [apps, selectedAppId]
   )
   const recentApps = apps.slice(0, 4)
 
   const selectApp = (app: WorkspaceApp) => {
     setSelectedAppId(app.id)
-    setFeedback(`${app.name}已打开`)
+    setFeedback(app.url && app.url !== "#" ? `${app.name} 已连接：${app.url}` : `${app.name}已打开`)
   }
 
   return (
@@ -88,6 +136,7 @@ export default function Workspace() {
                 onApprovalTitleChange={setApprovalTitle}
                 onReportTextChange={setReportText}
                 onFeedback={setFeedback}
+                appUrl={selectedApp.url}
               />
               <div className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">{feedback}</div>
             </CardContent>
@@ -153,6 +202,7 @@ function WorkspacePanel({
   onApprovalTitleChange,
   onReportTextChange,
   onFeedback,
+  appUrl,
 }: {
   appId: string
   approvalTitle: string
@@ -160,6 +210,7 @@ function WorkspacePanel({
   onApprovalTitleChange: (value: string) => void
   onReportTextChange: (value: string) => void
   onFeedback: (value: string) => void
+  appUrl?: string
 }) {
   if (appId === "approval") {
     return (
@@ -218,8 +269,13 @@ function WorkspacePanel({
 
   return (
     <div className="space-y-3">
-      <div className="rounded-md border p-3 text-sm">{messages[appId] ?? "应用已打开"}</div>
-      <Button size="sm" onClick={() => onFeedback(messages[appId] ?? "操作完成")}>刷新</Button>
+      <div className="rounded-md border p-3 text-sm">{messages[appId] ?? (appUrl && appUrl !== "#" ? `后台应用地址：${appUrl}` : "应用已打开")}</div>
+      <div className="flex gap-2">
+        <Button size="sm" onClick={() => onFeedback(messages[appId] ?? "操作完成")}>刷新</Button>
+        {appUrl && appUrl !== "#" && (
+          <Button size="sm" variant="outline" onClick={() => window.open(appUrl, "_blank", "noopener,noreferrer")}>打开应用</Button>
+        )}
+      </div>
     </div>
   )
 }

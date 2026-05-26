@@ -3,7 +3,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
-#include <QProcessEnvironment>
+#include <QTimer>
 
 SipMediaClient::SipMediaClient(QObject *parent)
     : QObject(parent)
@@ -18,6 +18,11 @@ SipMediaClient::SipMediaClient(QObject *parent)
             this, [this](int code, QProcess::ExitStatus) {
                 emit logLine("SIP EXIT code=" + QString::number(code));
             });
+}
+
+SipMediaClient::~SipMediaClient()
+{
+    stop();
 }
 
 void SipMediaClient::start(const QJsonObject &mediaConfig, const QString &callId, const QString &mediaType, bool outbound)
@@ -40,8 +45,13 @@ void SipMediaClient::start(const QJsonObject &mediaConfig, const QString &callId
         return;
     }
 
+    const QString localPort = QString::fromLocal8Bit(qgetenv("PJSUA_LOCAL_PORT")).trimmed();
+    const QString videoCaptureDev = QString::fromLocal8Bit(qgetenv("PJSUA_VIDEO_CAPTURE_DEV")).trimmed();
+    const QString audioCaptureDev = QString::fromLocal8Bit(qgetenv("PJSUA_AUDIO_CAPTURE_DEV")).trimmed();
+    const QString audioPlaybackDev = QString::fromLocal8Bit(qgetenv("PJSUA_AUDIO_PLAYBACK_DEV")).trimmed();
+
     QStringList args;
-    args << "--local-port=5062"
+    args << (localPort.isEmpty() ? QString("--local-port=5062") : "--local-port=" + localPort)
          << "--id" << selfUri
          << "--registrar" << registrar
          << "--realm=*"
@@ -50,8 +60,16 @@ void SipMediaClient::start(const QJsonObject &mediaConfig, const QString &callId
          << "--auto-conf"
          << "--auto-answer=200";
 
+    if (!audioCaptureDev.isEmpty()) {
+        args << "--capture-dev=" + audioCaptureDev;
+    }
+    if (!audioPlaybackDev.isEmpty()) {
+        args << "--playback-dev=" + audioPlaybackDev;
+    }
+
     if (mediaType == "video") {
-        args << "--video";
+        const QString captureDev = videoCaptureDev.isEmpty() ? QString("0") : videoCaptureDev;
+        args << "--video" << "--vcapture-dev=" + captureDev;
         emit logLine("SIP VIDEO enabled; camera/render success still depends on real device runtime.");
     }
 
@@ -65,6 +83,26 @@ void SipMediaClient::start(const QJsonObject &mediaConfig, const QString &callId
     process.start(bin, args);
     if (!process.waitForStarted(3000)) {
         emit logLine("SIP START failed: " + process.errorString());
+        return;
+    }
+
+    if (mediaType == "video") {
+        QTimer::singleShot(400, this, [this]() {
+            if (process.state() != QProcess::Running) {
+                return;
+            }
+            process.write("vid enable\n");
+            const QByteArray captureDev = qgetenv("PJSUA_VIDEO_CAPTURE_DEV").trimmed();
+            process.write("vid acc cap ");
+            process.write(captureDev.isEmpty() ? "0" : captureDev);
+            process.write("\n");
+            process.write("vid acc autorx off\n");
+            process.write("vid acc autotx on\n");
+            process.write("vid codec prio H264 255\n");
+            process.write("vid codec prio VP8 254\n");
+            process.write("vid win arrange\n");
+            emit logLine("SIP VIDEO commands sent: vid enable, configurable capture dev, autorx off, autotx on");
+        });
     }
 }
 

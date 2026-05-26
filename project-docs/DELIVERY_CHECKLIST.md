@@ -43,6 +43,7 @@ docker build -t enterprise-im-server:0.1.0 im-server
 .\scripts\verify-native-media-runtime.ps1
 .\scripts\verify-native-media-runtime.ps1 -RequireQt -RequireFlutter
 .\scripts\verify-video-capability.ps1
+.\scripts\verify-sip-audio-content.ps1
 .\scripts\verify-final-media-preflight.ps1
 ```
 
@@ -52,11 +53,12 @@ docker build -t enterprise-im-server:0.1.0 im-server
 - `pjsip-gateway` now has native adapter hooks for `pjsua-adapter` and `external-pjsip-command`.
 - The Compose gateway image now builds and bundles PJSIP/pjsua 2.14, so the previous missing native binary hard dependency is resolved.
 - SIP registrar/media topology is now reachable in Docker: Asterisk handles SIP, coturn is online, and `scripts/verify-sip-media-loop.ps1` verifies confirmed PCMU/RTP media between two registered PJSIP 2.14 clients.
+- Content-level audio proof is now automated by `scripts/verify-sip-audio-content.ps1`: the Qt-side endpoint plays a 440 Hz voice fingerprint, the Flutter-side endpoint plays an 880 Hz voice fingerprint, both sides record the call, and the script checks that each recording contains the other side's fingerprint. Evidence is saved under `build/sip-audio-content`.
 - Client media runtimes are present:
   - Qt: Windows PJSIP 2.14 `pjsua.exe` and DLLs are under `qt-client/third_party/pjsip/windows`, bundled in the VS2017 package, and `pjsua.exe --help` exposes video options.
   - Flutter arm64 is bundled: `libpjsua2.so`, `libc++_shared.so`, and `pjsua2.jar`.
-- Run `scripts/verify-final-media-preflight.ps1`; it chains native runtime bundle checks, explicit video capability checks, TURN allocation, and the Docker SIP PCMU/RTP loop.
-- After that preflight passes, remaining media acceptance requires real devices only: Qt microphone/speaker, Android microphone/camera permissions, camera preview/render, and cross-network TURN behavior.
+- Run `scripts/verify-final-media-preflight.ps1`; it chains native runtime bundle checks, explicit video capability checks, TURN allocation, the Docker SIP PCMU/RTP loop, and the content-level audio proof.
+- After that preflight passes, remaining media acceptance requires real devices only: hearing physical Qt/Android microphone/speaker audio in both directions, seeing the remote camera picture on both endpoints, and cross-network TURN behavior.
 - Qt and Flutter clients now use product-like IM layouts. Audio/video calls open a dedicated call screen; Flutter blocks self-answer on outgoing calls.
 - Flutter video now has local camera preview PiP and an Android PJSIP `SurfaceView` bridge for remote video. Final remote-camera rendering quality still needs a real Android phone.
 - Deep chat features such as image/file picker and push notification remain limited.

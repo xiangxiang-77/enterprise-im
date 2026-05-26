@@ -11,6 +11,7 @@ class SipMediaClient : public QObject
 
 public:
     explicit SipMediaClient(QObject *parent = nullptr);
+    ~SipMediaClient() override;
 
     void start(const QJsonObject &mediaConfig, const QString &callId, const QString &mediaType, bool outbound);
     void stop();

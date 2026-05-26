@@ -14,7 +14,7 @@ export default function Me() {
   const currentUser = authUser || Object.values(users)[0] || {
     id: "u_me",
     name: "当前用户",
-    avatar: "https://api.dicebear.com/9.x/initials/svg?seed=user",
+    avatar: "",
     status: "online" as const,
   }
 
@@ -74,9 +74,9 @@ export default function Me() {
 
           <div className="flex flex-col divide-y border-y">
             <MenuItem icon={Star} label="收藏" onClick={() => navigate("/me/favorites")} />
-            <MenuItem icon={FileText} label="朋友圈" />
-            <MenuItem icon={Wallet} label="卡包" />
-            <MenuItem icon={Smile} label="表情" />
+            <MenuItem icon={FileText} label="朋友圈" onClick={() => window.alert("朋友圈功能即将上线")} />
+            <MenuItem icon={Wallet} label="卡包" onClick={() => window.alert("卡包功能即将上线")} />
+            <MenuItem icon={Smile} label="表情" onClick={() => window.alert("表情管理即将上线")} />
           </div>
 
           <div className="flex flex-col divide-y border-y">

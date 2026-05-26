@@ -25,6 +25,37 @@ im:
   auth:
     demo-token-prefix: ${DEMO_TOKEN_PREFIX:demo-token-}
     admin-password: ${ADMIN_PASSWORD:admin123}
+    jwt-issuer: ${JWT_ISSUER:enterprise-im}
+    jwt-secret: ${JWT_SECRET:change-me-enterprise-im-jwt-secret}
+    access-token-ttl-seconds: ${ACCESS_TOKEN_TTL_SECONDS:86400}
+    user-demo-password: ${USER_DEMO_PASSWORD:demo123}
+    accept-demo-tokens: ${ACCEPT_DEMO_TOKENS:false}
+    demo-call-endpoints-enabled: ${DEMO_CALL_ENDPOINTS_ENABLED:false}
+    sms-provider: ${SMS_PROVIDER:disabled}
+    sms-code-ttl-seconds: ${SMS_CODE_TTL_SECONDS:300}
+    sso-provider: ${SSO_PROVIDER:disabled}
+    biometric-provider: ${BIOMETRIC_PROVIDER:client_unavailable}
+  # Alibaba Cloud SMS configuration
+  # aliyun:
+  #   sms:
+  #     access-key-id: your-access-key-id
+  #     access-key-secret: your-access-key-secret
+  #     sign-name: your-sign-name
+  #     template-code: SMS_123456789
+  # Tencent Cloud SMS configuration
+  # tencent:
+  #   sms:
+  #     secret-id: your-secret-id
+  #     secret-key: your-secret-key
+  #     sdk-app-id: "1400000000"
+  #     sign-name: your-sign-name
+  #     template-id: "1234567"
+  # OIDC / SSO configuration
+  # oidc:
+  #   issuer-uri: https://accounts.google.com
+  #   client-id: your-client-id
+  #   client-secret: your-client-secret
+  #   redirect-uri: http://localhost:8080/api/auth/sso/callback
   redis:
     url: ${REDIS_URL:redis://localhost:6379}
   storage:
@@ -32,14 +63,38 @@ im:
     access-key: ${MINIO_ACCESS_KEY:minioadmin}
     secret-key: ${MINIO_SECRET_KEY:minioadmin}
     bucket: ${MINIO_BUCKET:enterprise-im}
+    local-root: ${STORAGE_LOCAL_ROOT:./data/storage}
   realtime:
-    turn-url: ${TURN_URL:turn:10.200.71.31:3478}
+    turn-url: ${TURN_URL:turn:10.200.50.36:3478}
     turn-username: ${TURN_USERNAME:enterprise-im}
     turn-password: ${TURN_PASSWORD:enterprise-im-secret}
     pjsip-signal-url: ${PJSIP_SIGNAL_URL:http://localhost:7070}
     sip-domain: ${SIP_DOMAIN:enterprise-im.local}
     sip-registrar: ${SIP_REGISTRAR:sip:127.0.0.1:5060}
-    sip-android-registrar: ${SIP_ANDROID_REGISTRAR:sip:10.200.71.31:5060}
+    sip-android-registrar: ${SIP_ANDROID_REGISTRAR:sip:10.200.50.36:5060}
     sip-realm: ${SIP_REALM:asterisk}
     sip-password: ${SIP_PASSWORD:enterprise-im-sip-secret}
     probe-timeout-ms: ${REALTIME_PROBE_TIMEOUT_MS:500}
+  # Push notification provider (mock / fcm / apns)
+  push:
+    provider: ${PUSH_PROVIDER:mock}
+  # Firebase Cloud Messaging
+  fcm:
+    service-account-key: ${FCM_SERVICE_ACCOUNT_KEY:}
+    project-id: ${FCM_PROJECT_ID:}
+  # Apple Push Notification service
+  apns:
+    team-id: ${APNS_TEAM_ID:}
+    key-id: ${APNS_KEY_ID:}
+    private-key-path: ${APNS_PRIVATE_KEY_PATH:}
+    topic: ${APNS_TOPIC:}
+    production: ${APNS_PRODUCTION:true}
+  # Baidu OCR
+  baidu:
+    ocr:
+      api-key: ${BAIDU_OCR_API_KEY:}
+      secret-key: ${BAIDU_OCR_SECRET_KEY:}
+  # OnlyOffice document preview
+  onlyoffice:
+    api-url: ${ONLYOFFICE_API_URL:}
+    secret-key: ${ONLYOFFICE_SECRET_KEY:}

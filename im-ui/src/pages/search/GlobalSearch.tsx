@@ -1,47 +1,90 @@
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
-import { ChevronLeft, FileText, MessageSquare, Search } from "lucide-react"
+import { ChevronLeft, FileText, MessageSquare, Mic, Search, UserRound, UsersRound } from "lucide-react"
 import { format } from "date-fns"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useChatStore } from "@/stores/useChatStore"
+import { searchApi, searchRecommendationsApi, type SearchRecommendations, type SearchResult } from "@/services/api"
+import { useAuthStore } from "@/stores/useAuthStore"
+
+function highlight(text = "", query: string) {
+  if (!query) return text
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return text.replace(new RegExp(`(${escaped})`, "gi"), '<mark class="rounded bg-yellow-200 px-0.5 dark:bg-yellow-800">$1</mark>')
+}
 
 export default function GlobalSearch() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const filterSessionId = searchParams.get("sessionId")
+  const { token } = useAuthStore()
   const [query, setQuery] = useState("")
-  const { users, groups, messages, sessions } = useChatStore()
+  const [activeTab, setActiveTab] = useState(filterSessionId ? "messages" : "all")
+  const [results, setResults] = useState<SearchResult>({})
+  const [recommendations, setRecommendations] = useState<SearchRecommendations>({})
+  const [searching, setSearching] = useState(false)
+  const [listening, setListening] = useState(false)
+  const [history, setHistory] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("search-history") || "[]") } catch { return [] }
+  })
 
-  const normalizedQuery = query.toLowerCase()
-  const contactResults = filterSessionId ? [] : Object.values(users).filter((user) => (
-    user.name.toLowerCase().includes(normalizedQuery) || user.phone?.includes(query)
-  ))
-  const groupResults = filterSessionId ? [] : Object.values(groups).filter((group) => (
-    group.name.toLowerCase().includes(normalizedQuery)
-  ))
+  useEffect(() => {
+    if (!token) return
+    searchRecommendationsApi(token).then(setRecommendations).catch(() => setRecommendations({}))
+  }, [token])
 
-  const scopedMessages = Object.entries(messages).filter(([sessionId]) => !filterSessionId || sessionId === filterSessionId)
-  const messageResults = scopedMessages.flatMap(([sessionId, items]) => (
-    items
-      .filter((message) => message.type === "text" && message.content.toLowerCase().includes(normalizedQuery))
-      .map((message) => ({ sessionId, sessionName: sessions.find((session) => session.id === sessionId)?.name || "未知会话", message }))
-  ))
-  const fileResults = scopedMessages.flatMap(([sessionId, items]) => (
-    items
-      .filter((message) => message.type === "file" && message.fileName?.toLowerCase().includes(normalizedQuery))
-      .map((message) => ({ sessionId, sessionName: sessions.find((session) => session.id === sessionId)?.name || "未知会话", message }))
-  ))
-  const imageResults = scopedMessages.flatMap(([sessionId, items]) => (
-    items
-      .filter((message) => message.type === "image")
-      .map((message) => ({ sessionId, sessionName: sessions.find((session) => session.id === sessionId)?.name || "未知会话", message }))
-  ))
+  useEffect(() => {
+    if (!query.trim() || !token) {
+      setResults({})
+      return
+    }
+    const timer = window.setTimeout(async () => {
+      setSearching(true)
+      try {
+        const data = await searchApi(query, filterSessionId ? "messages" : activeTab, token)
+        setResults(data)
+        setHistory((prev) => {
+          const next = [query.trim(), ...prev.filter((item) => item !== query.trim())].slice(0, 20)
+          localStorage.setItem("search-history", JSON.stringify(next))
+          return next
+        })
+      } finally {
+        setSearching(false)
+      }
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [activeTab, filterSessionId, query, token])
 
-  const SearchResultItem = ({
+  const counts = useMemo(() => ({
+    contacts: results.contacts?.length ?? 0,
+    groups: results.groups?.length ?? 0,
+    messages: results.messages?.length ?? 0,
+    files: results.files?.length ?? 0,
+  }), [results])
+
+  const startVoiceSearch = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      setQuery("浏览器不支持语音搜索")
+      return
+    }
+    const recognition = new SpeechRecognition()
+    recognition.lang = "zh-CN"
+    recognition.interimResults = false
+    recognition.onstart = () => setListening(true)
+    recognition.onend = () => setListening(false)
+    recognition.onerror = () => setListening(false)
+    recognition.onresult = (event: any) => setQuery(event.results?.[0]?.[0]?.transcript || "")
+    recognition.start()
+  }
+
+  const jump = (url?: string, fallback?: string) => {
+    navigate(url || fallback || "/")
+  }
+
+  const ResultRow = ({
     icon,
     title,
     subtitle,
@@ -54,19 +97,42 @@ export default function GlobalSearch() {
     time?: string
     onClick?: () => void
   }) => (
-    <div onClick={onClick} className="flex cursor-pointer items-center gap-3 border-b bg-background px-4 py-3 hover:bg-muted/50">
-      <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-muted">{icon}</div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center justify-between">
-          <h3 className="truncate font-medium">{title}</h3>
-          {time && <span className="ml-2 whitespace-nowrap text-xs text-muted-foreground">{time}</span>}
-        </div>
-        {subtitle && <p className="truncate text-xs text-muted-foreground">{subtitle}</p>}
-      </div>
-    </div>
+    <button type="button" onClick={onClick} className="flex w-full items-center gap-3 border-b bg-background px-4 py-3 text-left hover:bg-muted/50">
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted">{icon}</span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center justify-between gap-3">
+          <span className="truncate text-sm font-medium" dangerouslySetInnerHTML={{ __html: highlight(title, query) }} />
+          {time && <span className="shrink-0 text-xs text-muted-foreground">{time}</span>}
+        </span>
+        {subtitle && <span className="block truncate text-xs text-muted-foreground" dangerouslySetInnerHTML={{ __html: highlight(subtitle, query) }} />}
+      </span>
+    </button>
   )
 
-  const empty = contactResults.length === 0 && groupResults.length === 0 && messageResults.length === 0 && fileResults.length === 0
+  const renderContacts = (items = results.contacts || []) => items.map((item) => (
+    <ResultRow key={item.id} icon={<UserRound className="h-5 w-5" />} title={item.name} subtitle={item.phone} onClick={() => jump(undefined, `/contact/profile/${item.id}`)} />
+  ))
+
+  const renderGroups = (items = results.groups || []) => items.map((item) => (
+    <ResultRow key={item.id} icon={<UsersRound className="h-5 w-5" />} title={item.name} subtitle={item.notice} onClick={() => jump(item.jumpUrl, `/chat/${item.id}`)} />
+  ))
+
+  const renderMessages = (items = results.messages || []) => items.map((item) => (
+    <ResultRow
+      key={item.id}
+      icon={<MessageSquare className="h-5 w-5" />}
+      title={item.conversationId}
+      subtitle={item.content || item.type}
+      time={item.createdAt ? format(new Date(item.createdAt), "MM-dd HH:mm") : undefined}
+      onClick={() => jump(item.jumpUrl, `/chat/${item.conversationId}?messageId=${item.id}`)}
+    />
+  ))
+
+  const renderFiles = (items = results.files || []) => items.map((item) => (
+    <ResultRow key={item.id} icon={<FileText className="h-5 w-5" />} title={item.name} subtitle={`${item.contentType || "file"} · ${item.sizeBytes} bytes`} onClick={() => jump(item.jumpUrl, "/files")} />
+  ))
+
+  const isEmpty = counts.contacts + counts.groups + counts.messages + counts.files === 0
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -77,157 +143,74 @@ export default function GlobalSearch() {
         <div className="relative flex-1">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder={filterSessionId ? "搜索聊天记录" : "搜索联系人、群聊、聊天记录、文件"}
-            className="h-9 border-none bg-muted/50 pl-9 focus-visible:ring-1"
+            placeholder={filterSessionId ? "搜索聊天记录" : "搜索联系人、群组、聊天记录、文件"}
+            className="h-9 border-none bg-muted/50 pl-9 pr-10 focus-visible:ring-1"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             autoFocus
           />
-        </div>
-        {query && (
-          <Button variant="ghost" size="sm" onClick={() => setQuery("")} className="px-2">
-            清空
+          <Button variant="ghost" size="icon" className="absolute right-0 top-0 h-9 w-9" onClick={startVoiceSearch} title="语音搜索">
+            <Mic className={`h-4 w-4 ${listening ? "text-primary" : ""}`} />
           </Button>
-        )}
+        </div>
       </header>
 
-      <div className="flex flex-1 flex-col overflow-hidden">
-        {query ? (
-          <Tabs defaultValue={filterSessionId ? "messages" : "all"} className="flex h-full flex-col">
-            <div className="shrink-0 border-b bg-background px-4 py-2">
-              <TabsList className="h-9 w-full justify-start overflow-x-auto bg-transparent p-0">
-                {!filterSessionId && <TabsTrigger value="all" className="h-8 rounded-full px-4 data-[state=active]:bg-muted/50 data-[state=active]:shadow-none">全部</TabsTrigger>}
-                {!filterSessionId && <TabsTrigger value="contacts" className="h-8 rounded-full px-4 data-[state=active]:bg-muted/50 data-[state=active]:shadow-none">联系人 ({contactResults.length})</TabsTrigger>}
-                {!filterSessionId && <TabsTrigger value="groups" className="h-8 rounded-full px-4 data-[state=active]:bg-muted/50 data-[state=active]:shadow-none">群组 ({groupResults.length})</TabsTrigger>}
-                <TabsTrigger value="messages" className="h-8 rounded-full px-4 data-[state=active]:bg-muted/50 data-[state=active]:shadow-none">聊天记录 ({messageResults.length})</TabsTrigger>
-                <TabsTrigger value="files" className="h-8 rounded-full px-4 data-[state=active]:bg-muted/50 data-[state=active]:shadow-none">文件 ({fileResults.length})</TabsTrigger>
-                <TabsTrigger value="images" className="h-8 rounded-full px-4 data-[state=active]:bg-muted/50 data-[state=active]:shadow-none">图片 ({imageResults.length})</TabsTrigger>
-              </TabsList>
-            </div>
-
-            <ScrollArea className="flex-1">
-              <div className="pb-4">
-                <TabsContent value="all" className="m-0">
-                  {contactResults.length > 0 && (
-                    <div className="mb-2">
-                      <div className="bg-muted/30 px-4 py-2 text-xs font-semibold text-muted-foreground">联系人</div>
-                      {contactResults.slice(0, 3).map((user) => (
-                        <SearchResultItem
-                          key={user.id}
-                          icon={<Avatar><AvatarImage src={user.avatar} /><AvatarFallback>{user.name[0]}</AvatarFallback></Avatar>}
-                          title={user.name}
-                          subtitle={user.phone}
-                          onClick={() => navigate(`/contact/profile/${user.id}`)}
-                        />
-                      ))}
-                    </div>
-                  )}
-
-                  {groupResults.length > 0 && (
-                    <div className="mb-2">
-                      <div className="bg-muted/30 px-4 py-2 text-xs font-semibold text-muted-foreground">群组</div>
-                      {groupResults.slice(0, 3).map((group) => (
-                        <SearchResultItem
-                          key={group.id}
-                          icon={<Avatar><AvatarImage src={group.avatar} /><AvatarFallback>{group.name[0]}</AvatarFallback></Avatar>}
-                          title={group.name}
-                          subtitle={`${group.members.length} 位成员`}
-                          onClick={() => navigate(`/chat/${group.id}`)}
-                        />
-                      ))}
-                    </div>
-                  )}
-
-                  {messageResults.length > 0 && (
-                    <div className="mb-2">
-                      <div className="bg-muted/30 px-4 py-2 text-xs font-semibold text-muted-foreground">聊天记录</div>
-                      {messageResults.slice(0, 3).map(({ sessionId, sessionName, message }) => (
-                        <SearchResultItem
-                          key={message.id}
-                          icon={<MessageSquare className="h-5 w-5 text-muted-foreground" />}
-                          title={sessionName}
-                          subtitle={message.content}
-                          time={format(message.timestamp, "MM-dd HH:mm")}
-                          onClick={() => navigate(`/chat/${sessionId}`)}
-                        />
-                      ))}
-                    </div>
-                  )}
-
-                  {fileResults.length > 0 && (
-                    <div className="mb-2">
-                      <div className="bg-muted/30 px-4 py-2 text-xs font-semibold text-muted-foreground">文件</div>
-                      {fileResults.slice(0, 3).map(({ sessionId, sessionName, message }) => (
-                        <SearchResultItem
-                          key={message.id}
-                          icon={<FileText className="h-5 w-5 text-blue-500" />}
-                          title={message.fileName || "未知文件"}
-                          subtitle={`来自：${sessionName}`}
-                          time={format(message.timestamp, "MM-dd HH:mm")}
-                          onClick={() => navigate(`/chat/${sessionId}`)}
-                        />
-                      ))}
-                    </div>
-                  )}
-
-                  {empty && (
-                    <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
-                      <Search className="mb-2 h-10 w-10 opacity-20" />
-                      <p>未找到相关内容</p>
-                    </div>
-                  )}
-                </TabsContent>
-
-                <TabsContent value="contacts" className="m-0">
-                  {contactResults.map((user) => (
-                    <SearchResultItem key={user.id} icon={<Avatar><AvatarImage src={user.avatar} /><AvatarFallback>{user.name[0]}</AvatarFallback></Avatar>} title={user.name} subtitle={user.phone} onClick={() => navigate(`/contact/profile/${user.id}`)} />
-                  ))}
-                  {contactResults.length === 0 && <div className="p-8 text-center text-muted-foreground">无结果</div>}
-                </TabsContent>
-
-                <TabsContent value="groups" className="m-0">
-                  {groupResults.map((group) => (
-                    <SearchResultItem key={group.id} icon={<Avatar><AvatarImage src={group.avatar} /><AvatarFallback>{group.name[0]}</AvatarFallback></Avatar>} title={group.name} subtitle={`${group.members.length} 位成员`} onClick={() => navigate(`/chat/${group.id}`)} />
-                  ))}
-                  {groupResults.length === 0 && <div className="p-8 text-center text-muted-foreground">无结果</div>}
-                </TabsContent>
-
-                <TabsContent value="messages" className="m-0">
-                  {messageResults.map(({ sessionId, sessionName, message }) => (
-                    <SearchResultItem key={message.id} icon={<MessageSquare className="h-5 w-5 text-muted-foreground" />} title={sessionName} subtitle={message.content} time={format(message.timestamp, "MM-dd HH:mm")} onClick={() => navigate(`/chat/${sessionId}`)} />
-                  ))}
-                  {messageResults.length === 0 && <div className="p-8 text-center text-muted-foreground">无结果</div>}
-                </TabsContent>
-
-                <TabsContent value="files" className="m-0">
-                  {fileResults.map((item) => (
-                    <SearchResultItem key={item.message.id} icon={<FileText className="h-5 w-5 text-blue-500" />} title={item.message.fileName || "未知文件"} subtitle={item.sessionName} time={format(item.message.timestamp, "MM-dd HH:mm")} onClick={() => navigate(`/chat/${item.sessionId}`)} />
-                  ))}
-                  {fileResults.length === 0 && <div className="p-8 text-center text-muted-foreground">无结果</div>}
-                </TabsContent>
-
-                <TabsContent value="images" className="m-0">
-                  <div className="grid grid-cols-3 gap-2 p-4">
-                    {imageResults.map((item) => (
-                      <div key={item.message.id} className="relative aspect-square cursor-pointer overflow-hidden rounded-md bg-muted group" onClick={() => navigate(`/chat/${item.sessionId}`)}>
-                        <img src={item.message.fileUrl} className="h-full w-full object-cover" alt="" />
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 transition-opacity group-hover:opacity-100">
-                          <span className="truncate px-2 text-xs text-white">{item.sessionName}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </TabsContent>
-              </div>
-            </ScrollArea>
-          </Tabs>
-        ) : (
-          <div className="flex h-full flex-col items-center justify-center text-muted-foreground opacity-50">
-            <Search className="mb-4 h-12 w-12" />
-            <p>搜索联系人、群聊、聊天记录、文件</p>
+      {query ? (
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex min-h-0 flex-1 flex-col">
+          <div className="shrink-0 border-b px-4 py-2">
+            <TabsList className="h-9 w-full justify-start overflow-x-auto bg-transparent p-0">
+              {!filterSessionId && <TabsTrigger value="all">全部</TabsTrigger>}
+              {!filterSessionId && <TabsTrigger value="contacts">联系人 {counts.contacts}</TabsTrigger>}
+              {!filterSessionId && <TabsTrigger value="groups">群组 {counts.groups}</TabsTrigger>}
+              <TabsTrigger value="messages">消息 {counts.messages}</TabsTrigger>
+              <TabsTrigger value="files">文件 {counts.files}</TabsTrigger>
+            </TabsList>
           </div>
-        )}
-      </div>
+          <ScrollArea className="flex-1">
+            {searching && <div className="px-4 py-2 text-xs text-muted-foreground">搜索中...</div>}
+            <TabsContent value="all" className="m-0">
+              {renderContacts((results.contacts || []).slice(0, 5))}
+              {renderGroups((results.groups || []).slice(0, 5))}
+              {renderMessages((results.messages || []).slice(0, 8))}
+              {renderFiles((results.files || []).slice(0, 5))}
+            </TabsContent>
+            <TabsContent value="contacts" className="m-0">{renderContacts()}</TabsContent>
+            <TabsContent value="groups" className="m-0">{renderGroups()}</TabsContent>
+            <TabsContent value="messages" className="m-0">{renderMessages()}</TabsContent>
+            <TabsContent value="files" className="m-0">{renderFiles()}</TabsContent>
+            {isEmpty && !searching && <div className="px-4 py-10 text-center text-sm text-muted-foreground">无结果</div>}
+          </ScrollArea>
+        </Tabs>
+      ) : (
+        <ScrollArea className="flex-1">
+          <div className="space-y-5 px-4 py-4">
+            {history.length > 0 && (
+              <section>
+                <div className="mb-2 flex items-center justify-between">
+                  <h2 className="text-xs font-semibold text-muted-foreground">搜索历史</h2>
+                  <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => { setHistory([]); localStorage.removeItem("search-history") }}>清除</Button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {history.map((item) => (
+                    <button key={item} className="rounded-full bg-muted px-3 py-1 text-xs" onClick={() => setQuery(item)}>{item}</button>
+                  ))}
+                </div>
+              </section>
+            )}
+            <section>
+              <h2 className="mb-2 text-xs font-semibold text-muted-foreground">推荐</h2>
+              <div className="overflow-hidden rounded-md border">
+                {renderContacts(recommendations.contacts || [])}
+                {renderGroups(recommendations.groups || [])}
+                {renderMessages(recommendations.messages || [])}
+                {!(recommendations.contacts?.length || recommendations.groups?.length || recommendations.messages?.length) && (
+                  <div className="px-4 py-8 text-center text-sm text-muted-foreground">暂无推荐</div>
+                )}
+              </div>
+            </section>
+          </div>
+        </ScrollArea>
+      )}
     </div>
   )
 }
